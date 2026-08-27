@@ -19,6 +19,12 @@ pub enum Error {
 
     #[error("SystemTimeError: {:?}", .0)]
     SystemTimeError(#[from] std::time::SystemTimeError),
+
+    #[error("Collision on deciding server")]
+    ServerCMPCollision,
+
+    #[error("Do not support ipv6")]
+    DoNotSupportIPV6
 }
 
 pub type Res<T> = Result<T, Error>;

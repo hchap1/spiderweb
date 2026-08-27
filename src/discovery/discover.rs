@@ -1,0 +1,42 @@
+use std::net::Ipv4Addr;
+use crate::discovery::register::get_advertiser;
+use crate::error::Res;
+use crate::error::Error;
+
+pub struct Discovery {
+    ip: Ipv4Addr,
+    port: u16,
+    instantiation_timestamp: u64
+}
+
+pub enum Mode {
+    Server,
+    Client
+}
+
+impl Discovery {
+
+    /// The older node will be the server. If the two nodes were created at the same time
+    /// The lower value of the bitwise interpretation (u32) of the ipv4 address will be the server
+    async fn decide_server(other: &Discovery) -> Res<Mode> {
+        let (my_ip, my_instantiation_timestamp) = {
+            let advertiser = get_advertiser().await;
+            (advertiser.instantiation_address.clone(), advertiser.instantiation_timestamp.clone())
+        };
+
+        if my_instantiation_timestamp < other.instantiation_timestamp {
+            Ok(Mode::Server)
+        } else if other.instantiation_timestamp < my_instantiation_timestamp {
+            Ok(Mode::Client)
+        } else {
+            // Same age, use IP comparison instead
+            if my_ip.to_bits() < other.ip.to_bits() {
+                Ok(Mode::Server)
+            } else if other.ip.to_bits() < my_ip.to_bits() {
+                Ok(Mode::Client)
+            } else {
+                Err(Error::ServerCMPCollision)
+            }
+        }
+    }
+}

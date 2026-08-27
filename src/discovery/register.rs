@@ -1,4 +1,4 @@
-use std::time::UNIX_EPOCH;
+use std::net::Ipv4Addr;
 
 use mdns_sd::ServiceDaemon;
 use mdns_sd::ServiceInfo;
@@ -14,8 +14,9 @@ use tokio::sync::OnceCell;
 
 /// MDNS advertiser
 pub struct Advertiser {
-    daemon: ServiceDaemon,
-    instantiation_timestamp: u64
+    pub daemon: ServiceDaemon,
+    pub instantiation_timestamp: u64,
+    pub instantiation_address: Ipv4Addr
 }
 
 // Required for errors
@@ -32,7 +33,11 @@ pub static ADVERTISER_READY: Notify = Notify::const_new();
 pub async fn register(application: &'static str, port: u16) -> Res<()> {
 
     // first retrieve suitable local ipv4 address
-    let ipv4 = tokio::task::spawn_blocking(local_ip_address::local_ip).await??;
+    let ipv4 = match tokio::task::spawn_blocking(local_ip_address::local_ip).await?? {
+        std::net::IpAddr::V4(v4) => v4,
+        std::net::IpAddr::V6(_) => return Err(crate::error::Error::DoNotSupportIPV6)
+    };
+    let ipv4_record = ipv4.clone();
 
     let ip_string = ipv4.to_string();
     let ip_port_string = join_delim([&ip_string, &port.to_string()], ":").replace(".", "-");
@@ -53,8 +58,14 @@ pub async fn register(application: &'static str, port: u16) -> Res<()> {
     let advertiser = Advertiser {
         daemon: mdns,
         instantiation_timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_secs()
+            .duration_since(std::time::UNIX_EPOCH)?.as_secs(),
+        instantiation_address: ipv4_record
     };
+
+    // Store the instantiation_timestamp so in an exchange, the older node starts the Server
+    let properties = [
+        ("instantiation_timestamp", &advertiser.instantiation_timestamp.to_string())
+    ];
 
     let service_info = ServiceInfo::new(
         &service_type,
@@ -62,7 +73,7 @@ pub async fn register(application: &'static str, port: u16) -> Res<()> {
         &host_name,
         &ip_string,
         port,
-        None
+        &properties[..]
     )?;
 
     // Register this application's service (nonblocking)
