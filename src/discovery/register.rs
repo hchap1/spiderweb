@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 
 use mdns_sd::ServiceDaemon;
 use mdns_sd::ServiceInfo;
+use tokio::sync::Notify;
 
 use crate::discovery::join_delim;
 use crate::discovery::SERVICE_TYPE;
@@ -9,11 +10,24 @@ use crate::discovery::join;
 use crate::discovery::underscore;
 use crate::error::Res;
 
-/// Advertises the service over MDNS
-pub struct Advertiser {
+use tokio::sync::OnceCell;
 
+/// MDNS advertiser
+pub struct Advertiser {
+    daemon: ServiceDaemon
 }
 
+// Required for errors
+impl std::fmt::Debug for Advertiser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Advertiser")
+    }
+}
+
+pub static ADVERTISER: OnceCell<Advertiser> = OnceCell::const_new();
+pub static ADVERTISER_READY: Notify = Notify::const_new();
+
+/// Advertises the service over MDNS
 pub fn register(application: &'static str, ipv4: Ipv4Addr, port: u16) -> Res<()> {
     let ip_string = ipv4.to_string();
     let ip_port_string = join_delim([&ip_string, &port.to_string()], ":").replace(".", "-");
@@ -29,7 +43,12 @@ pub fn register(application: &'static str, ipv4: Ipv4Addr, port: u16) -> Res<()>
     // The host_name under which to register the mDNS
     let host_name = join([&ip_string, ".local."]);
 
+    // Create MDNS manager and spawn into OnceCell
     let mdns = ServiceDaemon::new()?;
+    let advertiser = Advertiser {
+        daemon: mdns
+    };
+
     let service_info = ServiceInfo::new(
         &service_type,
         &instance_name,
@@ -37,6 +56,29 @@ pub fn register(application: &'static str, ipv4: Ipv4Addr, port: u16) -> Res<()>
         &ip_string,
         port,
         None
-    );
+    )?;
+
+    // Register this application's service
+    advertiser.daemon.register(service_info)?;
+    ADVERTISER.set(advertiser)?;
+    ADVERTISER_READY.notify_waiters();
+
     Ok(())
+}
+
+/// Yield reference to advertiser, or wait for it to be available
+pub async fn get_advertiser<'a>() -> &'a Advertiser {
+    loop {
+        if let Some(advertiser) = ADVERTISER.get() {
+            return advertiser;
+        }
+
+        let notified = ADVERTISER_READY.notified();
+
+        if let Some(advertiser) = ADVERTISER.get() {
+            return advertiser;
+        }
+
+        notified.await;
+    }
 }
