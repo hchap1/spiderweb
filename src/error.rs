@@ -16,6 +16,9 @@ pub enum Error {
 
     #[error("Local ip address error: {:?}", .0)]
     LocalIpAddressError(#[from] local_ip_address::Error),
+
+    #[error("SystemTimeError: {:?}", .0)]
+    SystemTimeError(#[from] std::time::SystemTimeError),
 }
 
 pub type Res<T> = Result<T, Error>;

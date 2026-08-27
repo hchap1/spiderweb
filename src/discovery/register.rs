@@ -1,3 +1,5 @@
+use std::time::UNIX_EPOCH;
+
 use mdns_sd::ServiceDaemon;
 use mdns_sd::ServiceInfo;
 use tokio::sync::Notify;
@@ -12,7 +14,8 @@ use tokio::sync::OnceCell;
 
 /// MDNS advertiser
 pub struct Advertiser {
-    daemon: ServiceDaemon
+    daemon: ServiceDaemon,
+    instantiation_timestamp: u64
 }
 
 // Required for errors
@@ -48,7 +51,9 @@ pub async fn register(application: &'static str, port: u16) -> Res<()> {
     // Create MDNS manager and spawn into OnceCell
     let mdns = ServiceDaemon::new()?;
     let advertiser = Advertiser {
-        daemon: mdns
+        daemon: mdns,
+        instantiation_timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?.as_secs()
     };
 
     let service_info = ServiceInfo::new(

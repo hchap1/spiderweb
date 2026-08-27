@@ -1,4 +1,5 @@
 mod discovery;
+mod network;
 mod error;
 
 fn main() {
