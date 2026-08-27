@@ -1,5 +1,3 @@
-use std::net::Ipv4Addr;
-
 use mdns_sd::ServiceDaemon;
 use mdns_sd::ServiceInfo;
 use tokio::sync::Notify;
@@ -28,7 +26,11 @@ pub static ADVERTISER: OnceCell<Advertiser> = OnceCell::const_new();
 pub static ADVERTISER_READY: Notify = Notify::const_new();
 
 /// Advertises the service over MDNS
-pub fn register(application: &'static str, ipv4: Ipv4Addr, port: u16) -> Res<()> {
+pub async fn register(application: &'static str, port: u16) -> Res<()> {
+
+    // first retrieve suitable local ipv4 address
+    let ipv4 = tokio::task::spawn_blocking(local_ip_address::local_ip).await??;
+
     let ip_string = ipv4.to_string();
     let ip_port_string = join_delim([&ip_string, &port.to_string()], ":").replace(".", "-");
 
@@ -58,7 +60,7 @@ pub fn register(application: &'static str, ipv4: Ipv4Addr, port: u16) -> Res<()>
         None
     )?;
 
-    // Register this application's service
+    // Register this application's service (nonblocking)
     advertiser.daemon.register(service_info)?;
     ADVERTISER.set(advertiser)?;
     ADVERTISER_READY.notify_waiters();
