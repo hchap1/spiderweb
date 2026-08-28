@@ -36,20 +36,39 @@ impl Node {
     /// The older node will be the server. If the two nodes were created at the same time
     /// The lower value of the bitwise interpretation (u32) of the ipv4 address will be the server
     /// Idiomatically, this function does nothing if this side will be the server
-    pub async fn connect(discovery: Discovery) -> Res<Option<Node>> {
+    pub async fn connect(discovery: Discovery, channel_size: usize) -> Res<Option<Node>> {
 
         // Decide who will be the server / client
-        match Discovery::decide_server(&discovery) {
-            Mode::Server => return Ok(None),
+        match Discovery::decide_server(&discovery).await? {
+            Mode::Server => Ok(None),
             Mode::Client => {
                 // Form a connection to the discovery
                 let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
-
-
-                Ok(())
+                Node::build(socket, channel_size).await.map(Some)
             }
         }
 
+    }
+
+    pub async fn build(stream: TcpStream, channel_size: usize) -> Res<Self> {
+
+        // Build Node
+        let (send, queue) = bounded(channel_size);
+        let (output, recv) = bounded(channel_size);
+
+        // Start processing the Node
+        let (read_half, write_half) = stream.into_split();
+        let send_task = tokio::task::spawn(Self::send_task(write_half, queue));
+        let recv_task = tokio::task::spawn(Self::recv_task(read_half, output));
+
+        Ok(
+            Node {
+                send,
+                recv,
+                send_task,
+                recv_task
+            }
+        )
     }
 
     async fn send_task(mut write_half: OwnedWriteHalf, queue: Receiver<Bytes>) -> Res<()> {
