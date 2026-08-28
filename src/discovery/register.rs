@@ -2,15 +2,12 @@ use std::net::Ipv4Addr;
 
 use mdns_sd::ServiceDaemon;
 use mdns_sd::ServiceInfo;
-use tokio::sync::Notify;
 
 use crate::discovery::join_delim;
 use crate::discovery::SERVICE_TYPE;
 use crate::discovery::join;
 use crate::discovery::underscore;
 use crate::error::Res;
-
-use tokio::sync::OnceCell;
 
 /// MDNS advertiser
 pub struct Advertiser {
@@ -26,11 +23,8 @@ impl std::fmt::Debug for Advertiser {
     }
 }
 
-pub static ADVERTISER: OnceCell<Advertiser> = OnceCell::const_new();
-pub static ADVERTISER_READY: Notify = Notify::const_new();
-
 /// Advertises the service over MDNS
-pub async fn register(application: &'static str, port: u16, mut nickname: Option<String>) -> Res<()> {
+pub async fn register(application: &'static str, port: u16, mut nickname: Option<String>) -> Res<Advertiser> {
 
     // first retrieve suitable local ipv4 address
     let ipv4 = match tokio::task::spawn_blocking(local_ip_address::local_ip).await?? {
@@ -85,25 +79,5 @@ pub async fn register(application: &'static str, port: u16, mut nickname: Option
 
     // Register this application's service (nonblocking)
     advertiser.daemon.register(service_info)?;
-    ADVERTISER.set(advertiser)?;
-    ADVERTISER_READY.notify_waiters();
-
-    Ok(())
-}
-
-/// Yield reference to advertiser, or wait for it to be available
-pub async fn get_advertiser<'a>() -> &'a Advertiser {
-    loop {
-        if let Some(advertiser) = ADVERTISER.get() {
-            return advertiser;
-        }
-
-        let notified = ADVERTISER_READY.notified();
-
-        if let Some(advertiser) = ADVERTISER.get() {
-            return advertiser;
-        }
-
-        notified.await;
-    }
+    Ok(advertiser)
 }

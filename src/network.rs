@@ -22,6 +22,13 @@ pub struct Server {
 
 }
 
+impl Server {
+
+    /// This function is responsible for receiving new mDNS discoveries AND foreign clients
+    /// it is also responsible for maintaining concurrency limit
+    async fn acquisition_manager() {}
+}
+
 /// The point of contact to a foreign server/client
 /// Unified interface, the goal of which is to obfuscate who is the server, and who is the client
 pub struct Node {
@@ -36,10 +43,10 @@ impl Node {
     /// The older node will be the server. If the two nodes were created at the same time
     /// The lower value of the bitwise interpretation (u32) of the ipv4 address will be the server
     /// Idiomatically, this function does nothing if this side will be the server
-    pub async fn connect(discovery: Discovery, channel_size: usize) -> Res<Option<Node>> {
+    pub async fn connect(this_discovery: Discovery, discovery: Discovery, channel_size: usize) -> Res<Option<Node>> {
 
         // Decide who will be the server / client
-        match Discovery::decide_server(&discovery).await? {
+        match Discovery::decide_server(&this_discovery, &discovery).await? {
             Mode::Server => Ok(None),
             Mode::Client => {
                 // Form a connection to the discovery
