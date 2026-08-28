@@ -4,9 +4,10 @@ use crate::error::Res;
 use crate::error::Error;
 
 pub struct Discovery {
-    ip: Ipv4Addr,
-    port: u16,
-    instantiation_timestamp: u64
+    pub ip: Ipv4Addr,
+    pub port: u16,
+    pub instantiation_timestamp: u64,
+    pub nickname: Option<String>
 }
 
 pub enum Mode {
@@ -18,10 +19,10 @@ impl Discovery {
 
     /// The older node will be the server. If the two nodes were created at the same time
     /// The lower value of the bitwise interpretation (u32) of the ipv4 address will be the server
-    async fn decide_server(other: &Discovery) -> Res<Mode> {
+    pub async fn decide_server(other: &Discovery) -> Res<Mode> {
         let (my_ip, my_instantiation_timestamp) = {
             let advertiser = get_advertiser().await;
-            (advertiser.instantiation_address.clone(), advertiser.instantiation_timestamp.clone())
+            (advertiser.instantiation_address, advertiser.instantiation_timestamp)
         };
 
         if my_instantiation_timestamp < other.instantiation_timestamp {

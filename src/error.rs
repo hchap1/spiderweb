@@ -24,7 +24,10 @@ pub enum Error {
     ServerCMPCollision,
 
     #[error("Do not support ipv6")]
-    DoNotSupportIPV6
+    DoNotSupportIPV6,
+
+    #[error("IO error (STD): {:?}", .0)]
+    StdIoError(#[from] std::io::Error),
 }
 
 pub type Res<T> = Result<T, Error>;
