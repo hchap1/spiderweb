@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use thiserror::Error;
 
 use crate::discovery::register::Advertiser;
@@ -28,6 +29,12 @@ pub enum Error {
 
     #[error("IO error (STD): {:?}", .0)]
     StdIoError(#[from] std::io::Error),
+
+    #[error("AsyncChannel Send Error: {:?}", .0)]
+    SendError(#[from] async_channel::SendError<Bytes>),
+
+    #[error("AsyncChannel Recv Error: {:?}", .0)]
+    RecvError(#[from] async_channel::RecvError),
 }
 
 pub type Res<T> = Result<T, Error>;

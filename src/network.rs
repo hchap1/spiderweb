@@ -7,6 +7,9 @@ use crate::error::Res;
 use async_channel::Sender;
 use async_channel::Receiver;
 use async_channel::bounded;
+use bytes::BytesMut;
+use tokio::io::AsyncReadExt;
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -59,6 +62,24 @@ impl Node {
 
             // Write payload into queue
             write_half.write_all(&bytes).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn recv_task(mut read_half: OwnedReadHalf, output: Sender<Bytes>) -> Res<()> {
+        let mut size_buffer = [0u8; 4];
+        while let Ok(_) = read_half.read_exact(&mut size_buffer).await {
+
+            // Process size header
+            let size: usize = u32::from_be_bytes(size_buffer) as usize;
+
+            // Buffer the bytes
+            let mut bytes = BytesMut::with_capacity(size);
+            read_half.read_exact(&mut bytes).await?;
+
+            // Send bytes object out into the world
+            output.send(bytes.freeze()).await?;
         }
 
         Ok(())
