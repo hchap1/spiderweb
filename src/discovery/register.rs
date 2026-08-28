@@ -30,7 +30,7 @@ pub static ADVERTISER: OnceCell<Advertiser> = OnceCell::const_new();
 pub static ADVERTISER_READY: Notify = Notify::const_new();
 
 /// Advertises the service over MDNS
-pub async fn register(application: &'static str, port: u16) -> Res<()> {
+pub async fn register(application: &'static str, port: u16, mut nickname: Option<String>) -> Res<()> {
 
     // first retrieve suitable local ipv4 address
     let ipv4 = match tokio::task::spawn_blocking(local_ip_address::local_ip).await?? {
@@ -62,9 +62,16 @@ pub async fn register(application: &'static str, port: u16) -> Res<()> {
         instantiation_address: ipv4_record
     };
 
+    let nickname = match nickname.as_ref() {
+        Some(nickname) => nickname.as_str(),
+        None => "None"
+    }.to_string();
+
     // Store the instantiation_timestamp so in an exchange, the older node starts the Server
+    // Store a friendly nickname [optionally]
     let properties = [
-        ("instantiation_timestamp", &advertiser.instantiation_timestamp.to_string())
+        ("instantiation_timestamp", &advertiser.instantiation_timestamp.to_string()),
+        ("nickname", &nickname)
     ];
 
     let service_info = ServiceInfo::new(
