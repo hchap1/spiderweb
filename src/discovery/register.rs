@@ -4,6 +4,7 @@ use mdns_sd::ServiceDaemon;
 use mdns_sd::ServiceEvent;
 use mdns_sd::ServiceInfo;
 
+use crate::discovery::discover::Discovery;
 use crate::discovery::join_delim;
 use crate::discovery::SERVICE_TYPE;
 use crate::discovery::join;
@@ -15,7 +16,8 @@ pub struct Advertiser {
     pub daemon: ServiceDaemon,
     pub service_type: String,
     pub instantiation_timestamp: u64,
-    pub instantiation_address: Ipv4Addr
+    pub instantiation_address: Ipv4Addr,
+    pub discovery: Discovery
 }
 
 // Required for errors
@@ -68,14 +70,23 @@ pub async fn register(application: &'static str, port: u16, mut nickname: Option
     // The host_name under which to register the mDNS
     let host_name = join([&ip_string, ".local."]);
 
+    // instantiation_timestamp
+    let instantiation_timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?.as_secs();
+
     // Create MDNS manager and spawn into OnceCell
     let mdns = ServiceDaemon::new()?;
     let advertiser = Advertiser {
         daemon: mdns,
         service_type: service_type.clone(),
-        instantiation_timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?.as_secs(),
-        instantiation_address: ipv4_record
+        instantiation_timestamp,
+        instantiation_address: ipv4_record,
+        discovery: Discovery {
+            ip: ipv4,
+            port,
+            instantiation_timestamp,
+            nickname: nickname.clone()
+        }
     };
 
     let nickname = match nickname.as_ref() {
