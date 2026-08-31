@@ -26,9 +26,21 @@ impl std::fmt::Debug for Advertiser {
 }
 
 impl Advertiser {
-    pub fn get_event_stream(&self) -> Res<mdns_sd::Receiver<ServiceEvent>> {
+    pub fn get_event_stream(&self) -> Res<async_channel::Receiver<ServiceEvent>> {
         let stream = self.daemon.browse(&self.service_type)?;
-        Ok(stream)
+        Ok(deploy_relay(stream))
+    }
+}
+
+fn deploy_relay<T: std::marker::Send + 'static>(mdns_receiver: mdns_sd::Receiver<T>) -> async_channel::Receiver<T> {
+    let (sender, receiver) = async_channel::unbounded();
+    tokio::task::spawn_blocking(|| blocking_relay(mdns_receiver, sender));
+    receiver
+}
+
+fn blocking_relay<T>(mdns_receiver: mdns_sd::Receiver<T>, async_sender: async_channel::Sender<T>) {
+    while let Ok(msg) = mdns_receiver.recv() {
+        let _ = async_sender.send_blocking(msg);
     }
 }
 
