@@ -1,6 +1,7 @@
 use std::net::Ipv4Addr;
 
 use mdns_sd::ServiceDaemon;
+use mdns_sd::ServiceEvent;
 use mdns_sd::ServiceInfo;
 
 use crate::discovery::join_delim;
@@ -12,6 +13,7 @@ use crate::error::Res;
 /// MDNS advertiser
 pub struct Advertiser {
     pub daemon: ServiceDaemon,
+    pub service_type: String,
     pub instantiation_timestamp: u64,
     pub instantiation_address: Ipv4Addr
 }
@@ -23,6 +25,13 @@ impl std::fmt::Debug for Advertiser {
     }
 }
 
+impl Advertiser {
+    pub fn get_event_stream(&self) -> Res<mdns_sd::Receiver<ServiceEvent>> {
+        let stream = self.daemon.browse(&self.service_type)?;
+        Ok(stream)
+    }
+}
+
 /// Advertises the service over MDNS
 pub async fn register(application: &'static str, port: u16, mut nickname: Option<String>) -> Res<Advertiser> {
 
@@ -31,7 +40,7 @@ pub async fn register(application: &'static str, port: u16, mut nickname: Option
         std::net::IpAddr::V4(v4) => v4,
         std::net::IpAddr::V6(_) => return Err(crate::error::Error::DoNotSupportIPV6)
     };
-    let ipv4_record = ipv4.clone();
+    let ipv4_record = ipv4;
 
     let ip_string = ipv4.to_string();
     let ip_port_string = join_delim([&ip_string, &port.to_string()], ":").replace(".", "-");
@@ -51,6 +60,7 @@ pub async fn register(application: &'static str, port: u16, mut nickname: Option
     let mdns = ServiceDaemon::new()?;
     let advertiser = Advertiser {
         daemon: mdns,
+        service_type: service_type.clone(),
         instantiation_timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?.as_secs(),
         instantiation_address: ipv4_record
