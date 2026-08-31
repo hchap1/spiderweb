@@ -35,6 +35,12 @@ pub enum Error {
 
     #[error("AsyncChannel Recv Error: {:?}", .0)]
     RecvError(#[from] async_channel::RecvError),
+
+    #[error("mDNS resolution succeeded but no address was found")]
+    ResolutionWithoutAddress,
+
+    #[error("Missing mDNS property")]
+    MissingProperty,
 }
 
 pub type Res<T> = Result<T, Error>;

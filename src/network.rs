@@ -1,18 +1,23 @@
+use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
 
 use crate::discovery::discover::Discovery;
 use crate::discovery::discover::Mode;
+use crate::discovery::register::register;
 use crate::error::Res;
 
 use async_channel::Sender;
 use async_channel::Receiver;
 use async_channel::bounded;
 use bytes::BytesMut;
+use mdns_sd::ServiceEvent;
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 use bytes::Bytes;
 
 /// The server manages the TcpListener for foreign clients accepting
@@ -26,7 +31,40 @@ impl Server {
 
     /// This function is responsible for receiving new mDNS discoveries AND foreign clients
     /// it is also responsible for maintaining concurrency limit
-    async fn acquisition_manager() {}
+    async fn acquisition_manager(
+        application_name: &'static str, port: u16, nickname: Option<String>,
+        concurrency_limit: usize, channel_size: usize
+    ) -> Res<()> {
+
+        let server = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
+        let advertiser = register(application_name, port, nickname).await?;
+        let semaphore = Semaphore::new(concurrency_limit);
+
+        let mdns_event_receiver = advertiser.get_event_stream()?;
+
+        while let Ok(event) = mdns_event_receiver.recv().await {
+            let discovery = match event {
+                ServiceEvent::ServiceResolved(resolved_service) => Discovery::from_resolved_service(resolved_service),
+                other => continue
+            };
+
+            let discovery = match discovery {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("Error: {e:?}");
+                    continue;
+                }
+            };
+
+            let res = advertiser.discovery.decide_server(&discovery).await;
+
+            // TODO node connection logic then tokio select this against incoming TCP connection
+            // TODO integrate all into semaphore by wrapping in Arc and spawning tasks waiting on permit
+        }
+
+
+        Ok(())
+    }
 }
 
 /// The point of contact to a foreign server/client

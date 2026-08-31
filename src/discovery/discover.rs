@@ -1,7 +1,10 @@
 use std::net::Ipv4Addr;
+use mdns_sd::ResolvedService;
+
 use crate::error::Res;
 use crate::error::Error;
 
+#[derive(Debug, Clone)]
 pub struct Discovery {
     pub ip: Ipv4Addr,
     pub port: u16,
@@ -15,6 +18,28 @@ pub enum Mode {
 }
 
 impl Discovery {
+
+    /// Load from a resolved service
+    pub fn from_resolved_service(resolved_service: Box<ResolvedService>) -> Res<Discovery> {
+        let ipv4 = resolved_service.get_addresses_v4().into_iter().next().ok_or(Error::ResolutionWithoutAddress)?;
+        let port = resolved_service.port;
+        let instantiation_timestamp = resolved_service
+            .txt_properties.get_property_val_str("instantation_timestamp")
+            .ok_or(Error::MissingProperty)?
+            .parse::<u64>()
+            .map_err(|_| Error::MissingProperty)?;
+
+        let nickname = resolved_service
+            .txt_properties.get_property_val_str("nickname")
+            .map(String::from);
+
+        Ok(Discovery {
+            ip: ipv4,
+            port,
+            instantiation_timestamp,
+            nickname
+        })
+    }
 
     /// The older node will be the server. If the two nodes were created at the same time
     /// The lower value of the bitwise interpretation (u32) of the ipv4 address will be the server
