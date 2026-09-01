@@ -43,7 +43,10 @@ pub enum Error {
     MissingProperty,
 
     #[error("Unable to acquire a permit from semaphore")]
-    TokioAcquireError(#[from] tokio::sync::AcquireError)
+    TokioAcquireError(#[from] tokio::sync::AcquireError),
+
+    #[error("Failed to serialise: {:?}", .0)]
+    RancorError(#[from] rkyv::rancor::Error)
 }
 
 pub type Res<T> = Result<T, Error>;

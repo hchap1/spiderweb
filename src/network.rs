@@ -119,6 +119,7 @@ impl Server {
                     };
 
                     let semaphore_clone = semaphore.clone();
+                    let hashmap_clone = nodes.clone();
 
                     tokio::task::spawn(async move {
 
@@ -127,7 +128,17 @@ impl Server {
                         let node = Node::build(socket, channel_size, permit).await?;
 
                         // This should contain serialised discovery information
-                        let first_packet_bytes = node.recv.recv().await;
+                        let first_packet_bytes = node.recv.recv().await?;
+                        let discovery = match Discovery::from_bytes(first_packet_bytes) {
+                            Ok(discovery) => discovery,
+                            error => {
+                                eprintln!("[SPIDERWEB] Refusing client due to malformed discovery header.");
+                                return error.map(|_| ());
+                            }
+                        };
+
+                        let mut hashmap = hashmap_clone.lock().await;
+                        let _ = hashmap.insert(discovery.get_identifier(), node);
 
                         Ok::<(), crate::error::Error>(())
                     });
