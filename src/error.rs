@@ -30,8 +30,8 @@ pub enum Error {
     #[error("IO error (STD): {:?}", .0)]
     StdIoError(#[from] std::io::Error),
 
-    #[error("AsyncChannel Send Error: {:?}", .0)]
-    SendError(#[from] async_channel::SendError<Bytes>),
+    #[error("AsyncChannel Send Error")]
+    SendError,
 
     #[error("AsyncChannel Recv Error: {:?}", .0)]
     RecvError(#[from] async_channel::RecvError),
@@ -50,6 +50,12 @@ pub enum Error {
 
     #[error("Failed to receive first packet from client")]
     NoFirstPacket,
+}
+
+impl<T> From<async_channel::SendError<T>> for Error {
+    fn from(_value: async_channel::SendError<T>) -> Self {
+        Self::SendError
+    }
 }
 
 pub type Res<T> = Result<T, Error>;

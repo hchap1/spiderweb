@@ -32,7 +32,7 @@ pub struct Server {
     nodes: Arc<Mutex<HashMap<String, Node>>>,
 
     pub incoming: Receiver <(Bytes, String)>,
-    pub outgoing: Sender   <(Bytes, Option<String>)>,
+    pub outgoing: Sender   <(Bytes, Vec<String>)>,
 
     // Outgoing messages
     send_task: JoinHandle<Res<()>>,
@@ -44,11 +44,30 @@ impl Server {
     pub fn build(
         application_name: &'static str, port: u16, nickname: Option<String>,
         concurrency_limit: usize, channel_size: usize
-    ) -> Res<Self> {
+    ) -> Self {
 
         // Create channels for owned tasks
-        let (incoming_sender, incoming_receiver) = bounded(channel_size);
-        let (outgoing_sender, outgoing_receiver) = bounded(channel_size);
+        let (incoming_sender, incoming) = bounded(channel_size);
+        let (outgoing, outgoing_receiver) = bounded(channel_size);
+        let nodes = Arc::new(Mutex::new(HashMap::new()));
+
+        let send_task = tokio::task::spawn(Self::send(outgoing_receiver, nodes.clone()));
+        let acquisition_task = tokio::task::spawn(
+            Self::acquisition_manager(application_name, port, nickname, concurrency_limit, channel_size, nodes.clone(), incoming_sender)
+        );
+
+        Self {
+            nodes,
+            incoming,
+            outgoing,
+            send_task,
+            acquisition_task
+        }
+    }
+
+    pub async fn get_foreign_identifiers(&self) -> Vec<String> {
+        let hashmap = self.nodes.lock().await;
+        hashmap.keys().cloned().collect()
     }
 
     /// Distribute a packet to a selection of identifiers
@@ -77,7 +96,7 @@ impl Server {
     async fn acquisition_manager(
         application_name: &'static str, port: u16, nickname: Option<String>,
         concurrency_limit: usize, channel_size: usize,
-        nodes: Arc<Mutex<HashMap<String, Node>>>, incoming_sender: Sender<Bytes>
+        nodes: Arc<Mutex<HashMap<String, Node>>>, incoming_sender: Sender<(Bytes, String)>
     ) -> Res<()> {
 
         let server = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
@@ -160,6 +179,7 @@ impl Server {
                         }
                     };
 
+                    let my_identifier = advertiser.discovery.get_identifier();
                     let semaphore_clone = semaphore.clone();
                     let hashmap_clone = nodes.clone();
                     let incoming_sender_clone = incoming_sender.clone();
@@ -168,7 +188,7 @@ impl Server {
 
                         // Take out a permit to enforce concurrency limit
                         let permit = semaphore_clone.acquire_owned().await?;
-                        let (node, first_packet_bytes) = Node::build_and_listen(socket, channel_size, permit, incoming_sender_clone).await?;
+                        let (node, first_packet_bytes) = Node::build_and_listen(my_identifier, socket, channel_size, permit, incoming_sender_clone).await?;
 
                         // This should contain serialised discovery information
                         let discovery = match Discovery::from_bytes(first_packet_bytes) {
@@ -203,15 +223,22 @@ pub struct Node {
 impl Node {
 
     /// Connect to a foreign node. This should only be run if it has already been determined that this end is the client.
-    pub async fn connect(me: Discovery, discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<Bytes>) -> Res<Node> {
+    pub async fn connect(me: Discovery, discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<(Bytes, String)>) -> Res<Node> {
         // Form a connection to the discovery
         let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
-        let (node, _) = Node::build(socket, channel_size, permit, incoming_sender, false).await?;
+        let (node, _) = Node::build(me.get_identifier(), socket, channel_size, permit, incoming_sender, false).await?;
         node.send.send(me.to_bytes()?).await?;
         Ok(node)
     }
 
-    pub async fn build(stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<Bytes>, receive_one: bool) -> Res<(Self, Option<Bytes>)> {
+    pub async fn build(
+        identifier: String,
+        stream: TcpStream,
+        channel_size: usize,
+        permit: OwnedSemaphorePermit,
+        incoming_sender: Sender<(Bytes, String)>,
+        receive_one: bool
+    ) -> Res<(Self, Option<Bytes>)> {
 
         // Build Node
         let (send, queue) = bounded(channel_size);
@@ -232,7 +259,7 @@ impl Node {
         };
 
         let send_task = tokio::task::spawn(Self::send_task(write_half, queue));
-        let recv_task = tokio::task::spawn(Self::recv_task(read_half, incoming_sender));
+        let recv_task = tokio::task::spawn(Self::recv_task(read_half, incoming_sender, identifier));
         let task = tokio::task::spawn(Self::node_heartbeat(permit, send_task, recv_task));
 
         Ok(
@@ -246,8 +273,10 @@ impl Node {
         )
     }
     
-    async fn build_and_listen(stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<Bytes>) -> Res<(Node, Bytes)> {
-        let (node, first_packet) = Node::build(stream, channel_size, permit, incoming_sender, true).await?;
+    async fn build_and_listen(
+        identifier: String, stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<(Bytes, String)>
+    ) -> Res<(Node, Bytes)> {
+        let (node, first_packet) = Node::build(identifier, stream, channel_size, permit, incoming_sender, true).await?;
         match first_packet {
             Some(first_packet) => Ok((node, first_packet)),
             None => Err(crate::error::Error::NoFirstPacket)
@@ -269,7 +298,7 @@ impl Node {
         Ok(())
     }
 
-    async fn recv_task(mut read_half: OwnedReadHalf, output: Sender<Bytes>) -> Res<()> {
+    async fn recv_task(mut read_half: OwnedReadHalf, output: Sender<(Bytes, String)>, identifier: String) -> Res<()> {
         let mut size_buffer = [0u8; 4];
         while let Ok(_) = read_half.read_exact(&mut size_buffer).await {
 
@@ -281,7 +310,7 @@ impl Node {
             read_half.read_exact(&mut bytes).await?;
 
             // Send bytes object out into the world
-            output.send(bytes.freeze()).await?;
+            output.send((bytes.freeze(), identifier.clone())).await?;
         }
 
         Ok(())
