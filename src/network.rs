@@ -29,7 +29,7 @@ use tokio::task::JoinHandle;
 /// and produces a Node upon successful connection
 /// Also tracks individual nodes
 pub struct Server {
-    nodes: Arc<Mutex<HashMap<String, String>>>,
+    nodes: Arc<Mutex<HashMap<String, Node>>>,
     acquisition_task: JoinHandle<Res<()>>
 }
 
@@ -40,14 +40,13 @@ impl Server {
     async fn acquisition_manager(
         application_name: &'static str, port: u16, nickname: Option<String>,
         concurrency_limit: usize, channel_size: usize,
-        nodes: Arc<Mutex<HashMap<String, String>>>
+        nodes: Arc<Mutex<HashMap<String, Node>>>
     ) -> Res<()> {
 
         let server = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
         let advertiser = register(application_name, port, nickname).await?;
         let semaphore = Arc::new(Semaphore::new(concurrency_limit));
         let mdns_event_receiver = advertiser.get_event_stream()?;
-        let mut queue: Vec<(String, Node)> = Vec::new();
 
         while let Ok(event) = mdns_event_receiver.recv().await {
             let discovery = match event {
@@ -71,13 +70,29 @@ impl Server {
                 }
             };
 
+            let hashmap_clone = nodes.clone();
             let sempahore_clone = semaphore.clone();
+            
             match mode {
-                Mode::Client => tokio::task::spawn(async {
+                Mode::Client => tokio::task::spawn(async move {
                     let permit = sempahore_clone.acquire_owned().await?;
-                    Node::connect(discovery, channel_size, permit)
-                })
-            }
+                    let identifier = discovery.get_identifier();
+                    match Node::connect(discovery, channel_size, permit).await {
+                        Ok(node) => {
+                            let mut hashmap = hashmap_clone.lock().await;
+                            let _ = hashmap.insert(identifier, node);
+                        },
+                        Err(e) => {
+                            eprintln!("[SPIDERWEB] Failed to connect to foreign node as a client. {e:?}");
+                        }
+                    }
+                    Ok::<(), crate::error::Error>(())
+                }),
+                Mode::Server => {
+                    eprintln!("[SPIDERWEB] Discovered node that should connect.");
+                    continue;
+                }
+            };
 
             // TODO node connection logic then tokio select this against incoming TCP connection
             // TODO integrate all into semaphore by wrapping in Arc and spawning tasks waiting on permit
@@ -99,10 +114,10 @@ pub struct Node {
 impl Node {
 
     /// Connect to a foreign node. This should only be run if it has already been determined that this end is the client.
-    pub async fn connect(discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Option<Node>> {
+    pub async fn connect(discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Node> {
         // Form a connection to the discovery
         let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
-        Node::build(socket, channel_size, permit).await.map(Some)
+        Node::build(socket, channel_size, permit).await
     }
 
     pub async fn build(stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Self> {

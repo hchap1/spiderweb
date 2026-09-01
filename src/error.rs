@@ -41,6 +41,9 @@ pub enum Error {
 
     #[error("Missing mDNS property")]
     MissingProperty,
+
+    #[error("Unable to acquire a permit from semaphore")]
+    TokioAcquireError(#[from] tokio::sync::AcquireError)
 }
 
 pub type Res<T> = Result<T, Error>;
