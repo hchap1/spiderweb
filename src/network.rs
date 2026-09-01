@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
+use std::sync::Arc;
 
 use crate::discovery::discover::Discovery;
 use crate::discovery::discover::Mode;
@@ -18,13 +20,16 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
+use tokio::sync::Mutex;
 use bytes::Bytes;
+use tokio::task::JoinHandle;
 
 /// The server manages the TcpListener for foreign clients accepting
 /// and produces a Node upon successful connection
 /// Also tracks individual nodes
 pub struct Server {
-
+    nodes: Arc<Mutex<HashMap<String, String>>>,
+    acquisition_task: JoinHandle<Res<()>>
 }
 
 impl Server {
@@ -33,30 +38,45 @@ impl Server {
     /// it is also responsible for maintaining concurrency limit
     async fn acquisition_manager(
         application_name: &'static str, port: u16, nickname: Option<String>,
-        concurrency_limit: usize, channel_size: usize
+        concurrency_limit: usize, channel_size: usize,
+        nodes: Arc<Mutex<HashMap<String, String>>>
     ) -> Res<()> {
 
         let server = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
         let advertiser = register(application_name, port, nickname).await?;
-        let semaphore = Semaphore::new(concurrency_limit);
-
+        let semaphore = Arc::new(Semaphore::new(concurrency_limit));
         let mdns_event_receiver = advertiser.get_event_stream()?;
+        let mut queue: Vec<(String, Node)> = Vec::new();
 
         while let Ok(event) = mdns_event_receiver.recv().await {
             let discovery = match event {
                 ServiceEvent::ServiceResolved(resolved_service) => Discovery::from_resolved_service(resolved_service),
-                other => continue
+                _ => continue
             };
 
             let discovery = match discovery {
                 Ok(v) => v,
                 Err(e) => {
-                    println!("Error: {e:?}");
+                    println!("[SPIDERWEB] Failed to parse discovery. {e:?}");
                     continue;
                 }
             };
 
-            let res = advertiser.discovery.decide_server(&discovery).await;
+            let mode = match advertiser.discovery.decide_server(&discovery).await {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[SPIDERWEB] Failed to decide server. {e:?}");
+                    continue;
+                }
+            };
+
+            let sempahore_clone = semaphore.clone();
+            match mode {
+                Mode::Client => tokio::task::spawn(async {
+                    let permit = sempahore_clone.acquire_owned().await?;
+                    Node::connect()
+                })
+            }
 
             // TODO node connection logic then tokio select this against incoming TCP connection
             // TODO integrate all into semaphore by wrapping in Arc and spawning tasks waiting on permit
@@ -78,21 +98,11 @@ pub struct Node {
 
 impl Node {
 
-    /// The older node will be the server. If the two nodes were created at the same time
-    /// The lower value of the bitwise interpretation (u32) of the ipv4 address will be the server
-    /// Idiomatically, this function does nothing if this side will be the server
-    pub async fn connect(this_discovery: Discovery, discovery: Discovery, channel_size: usize) -> Res<Option<Node>> {
-
-        // Decide who will be the server / client
-        match Discovery::decide_server(&this_discovery, &discovery).await? {
-            Mode::Server => Ok(None),
-            Mode::Client => {
-                // Form a connection to the discovery
-                let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
-                Node::build(socket, channel_size).await.map(Some)
-            }
-        }
-
+    /// Connect to a foreign node. This should only be run if it has already been determined that this end is the client.
+    pub async fn connect(discovery: Discovery, channel_size: usize) -> Res<Option<Node>> {
+        // Form a connection to the discovery
+        let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
+        Node::build(socket, channel_size).await.map(Some)
     }
 
     pub async fn build(stream: TcpStream, channel_size: usize) -> Res<Self> {
