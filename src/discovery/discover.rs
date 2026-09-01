@@ -1,10 +1,12 @@
 use std::net::Ipv4Addr;
+use bytes::Bytes;
 use mdns_sd::ResolvedService;
 
 use crate::error::Res;
 use crate::error::Error;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Deserialize, rkyv::Serialize)]
+#[rkyv()]
 pub struct Discovery {
     pub ip: Ipv4Addr,
     pub port: u16,
@@ -21,7 +23,6 @@ impl Discovery {
 
     /// Load from a resolved service
     #[allow(clippy::boxed_local)]
-    #[allow(clippy::result_large_err)]
     pub fn from_resolved_service(resolved_service: Box<ResolvedService>) -> Res<Discovery> {
         let ipv4 = resolved_service.get_addresses_v4().into_iter().next().ok_or(Error::ResolutionWithoutAddress)?;
         let port = resolved_service.port;
@@ -64,5 +65,16 @@ impl Discovery {
 
     pub fn get_identifier(&self) -> String {
         format!("{}-{}-{}", self.ip, self.port, self.instantiation_timestamp)
+    }
+
+    pub fn to_bytes(&self) -> Res<Bytes> {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(self)?;
+        Ok(Bytes::from_owner(bytes))
+    }
+
+    pub fn from_bytes(bytes: Bytes) -> Res<Self> {
+        let archived = rkyv::access::<ArchivedDiscovery, rkyv::rancor::Error>(&bytes)?;
+        let original = rkyv::deserialize::<Self, rkyv::rancor::Error>(archived)?;
+        Ok(original)
     }
 }
