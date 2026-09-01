@@ -27,7 +27,7 @@ impl Discovery {
         let ipv4 = resolved_service.get_addresses_v4().into_iter().next().ok_or(Error::ResolutionWithoutAddress)?;
         let port = resolved_service.port;
         let instantiation_timestamp = resolved_service
-            .txt_properties.get_property_val_str("instantation_timestamp")
+            .txt_properties.get_property_val_str("instantiation_timestamp")
             .ok_or(Error::MissingProperty)?
             .parse::<u64>()
             .map_err(|_| Error::MissingProperty)?;
