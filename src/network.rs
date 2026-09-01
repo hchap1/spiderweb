@@ -83,11 +83,11 @@ impl Server {
                     };
 
                     let hashmap_clone = nodes.clone();
-                    let sempahore_clone = semaphore.clone();
+                    let semaphore_clone = semaphore.clone();
                     
                     match mode {
                         Mode::Client => tokio::task::spawn(async move {
-                            let permit = sempahore_clone.acquire_owned().await?;
+                            let permit = semaphore_clone.acquire_owned().await?;
                             let identifier = discovery.get_identifier();
                             match Node::connect(discovery, channel_size, permit).await {
                                 Ok(node) => {
@@ -108,8 +108,29 @@ impl Server {
                 }
 
                 // Handle an incoming TCP connection (likely from a foreign client)
+                // First, must wait for a packet containing the serialised discovery information
                 maybe_request = server.accept() => {
+                    let (socket, _) = match maybe_request {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("[SPIDERWEB] Failed to accept connection request. {e:?}");
+                            continue;
+                        }
+                    };
 
+                    let semaphore_clone = semaphore.clone();
+
+                    tokio::task::spawn(async move {
+
+                        // Take out a permit to enforce concurrency limit
+                        let permit = semaphore_clone.acquire_owned().await?;
+                        let node = Node::build(socket, channel_size, permit).await?;
+
+                        // This should contain serialised discovery information
+                        let first_packet_bytes = node.recv.recv().await;
+
+                        Ok::<(), crate::error::Error>(())
+                    });
                 }
             }
         }
@@ -130,6 +151,8 @@ impl Node {
     pub async fn connect(discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Node> {
         // Form a connection to the discovery
         let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
+
+        // TODO send discovery information about myself
         Node::build(socket, channel_size, permit).await
     }
 

@@ -20,6 +20,8 @@ pub enum Mode {
 impl Discovery {
 
     /// Load from a resolved service
+    #[allow(clippy::boxed_local)]
+    #[allow(clippy::result_large_err)]
     pub fn from_resolved_service(resolved_service: Box<ResolvedService>) -> Res<Discovery> {
         let ipv4 = resolved_service.get_addresses_v4().into_iter().next().ok_or(Error::ResolutionWithoutAddress)?;
         let port = resolved_service.port;
