@@ -31,8 +31,8 @@ use tokio::task::JoinHandle;
 pub struct Server {
     nodes: Arc<Mutex<HashMap<String, Node>>>,
 
-    pub incoming: Receiver <Bytes>,
-    pub outgoing: Sender   <Bytes>,
+    pub incoming: Receiver <(Bytes, String)>,
+    pub outgoing: Sender   <(Bytes, Option<String>)>,
 
     // Outgoing messages
     send_task: JoinHandle<Res<()>>,
@@ -51,8 +51,25 @@ impl Server {
         let (outgoing_sender, outgoing_receiver) = bounded(channel_size);
     }
 
-    async fn send(outgoing_receiver: Receiver<Bytes>, nodes: Arc<Mutex<HashMap<String, Node>>>) -> Res<()> {
+    /// Distribute a packet to a selection of identifiers
+    /// If the Vec<String> is empty, then the packet will be sent to all nodes.
+    async fn send(outgoing_receiver: Receiver<(Bytes, Vec<String>)>, nodes: Arc<Mutex<HashMap<String, Node>>>) -> Res<()> {
+        while let Ok((packet, identifiers)) = outgoing_receiver.recv().await {
+            let hashmap = nodes.lock().await;
+            if identifiers.is_empty() {
+                for node in hashmap.values() {
+                    let _ = node.send.send(packet.clone()).await;
+                }
+            } else {
+                for identifier in identifiers {
+                    if let Some(node) = hashmap.get(&identifier) {
+                        let _ = node.send.send(packet.clone()).await;
+                    }
+                }
+            }
+        }
 
+        Ok(())
     }
 
     /// This function is responsible for receiving new mDNS discoveries AND foreign clients
