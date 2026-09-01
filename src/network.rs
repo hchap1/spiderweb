@@ -48,58 +48,71 @@ impl Server {
         let semaphore = Arc::new(Semaphore::new(concurrency_limit));
         let mdns_event_receiver = advertiser.get_event_stream()?;
 
-        while let Ok(event) = mdns_event_receiver.recv().await {
-            let discovery = match event {
-                ServiceEvent::ServiceResolved(resolved_service) => Discovery::from_resolved_service(resolved_service),
-                _ => continue
-            };
+        loop {
+            tokio::select! {
 
-            let discovery = match discovery {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("[SPIDERWEB] Failed to parse discovery. {e:?}");
-                    continue;
-                }
-            };
-
-            let mode = match advertiser.discovery.decide_server(&discovery).await {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("[SPIDERWEB] Failed to decide server. {e:?}");
-                    continue;
-                }
-            };
-
-            let hashmap_clone = nodes.clone();
-            let sempahore_clone = semaphore.clone();
-            
-            match mode {
-                Mode::Client => tokio::task::spawn(async move {
-                    let permit = sempahore_clone.acquire_owned().await?;
-                    let identifier = discovery.get_identifier();
-                    match Node::connect(discovery, channel_size, permit).await {
-                        Ok(node) => {
-                            let mut hashmap = hashmap_clone.lock().await;
-                            let _ = hashmap.insert(identifier, node);
-                        },
+                // Handle an mDNS resolution
+                maybe_event = mdns_event_receiver.recv() => {
+                    let event = match maybe_event {
+                        Ok(event) => event,
                         Err(e) => {
-                            eprintln!("[SPIDERWEB] Failed to connect to foreign node as a client. {e:?}");
+                            eprintln!("[SPIDERWEB] Failed to retrieve mDNS event: {e:?}");
+                            continue;
                         }
-                    }
-                    Ok::<(), crate::error::Error>(())
-                }),
-                Mode::Server => {
-                    eprintln!("[SPIDERWEB] Discovered node that should connect.");
-                    continue;
+                    };
+
+                    let discovery = match event {
+                        ServiceEvent::ServiceResolved(resolved_service) => Discovery::from_resolved_service(resolved_service),
+                        _ => continue
+                    };
+
+                    let discovery = match discovery {
+                        Ok(v) => v,
+                        Err(e) => {
+                            println!("[SPIDERWEB] Failed to parse discovery. {e:?}");
+                            continue;
+                        }
+                    };
+
+                    let mode = match advertiser.discovery.decide_server(&discovery).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("[SPIDERWEB] Failed to decide server. {e:?}");
+                            continue;
+                        }
+                    };
+
+                    let hashmap_clone = nodes.clone();
+                    let sempahore_clone = semaphore.clone();
+                    
+                    match mode {
+                        Mode::Client => tokio::task::spawn(async move {
+                            let permit = sempahore_clone.acquire_owned().await?;
+                            let identifier = discovery.get_identifier();
+                            match Node::connect(discovery, channel_size, permit).await {
+                                Ok(node) => {
+                                    let mut hashmap = hashmap_clone.lock().await;
+                                    let _ = hashmap.insert(identifier, node);
+                                },
+                                Err(e) => {
+                                    eprintln!("[SPIDERWEB] Failed to connect to foreign node as a client. {e:?}");
+                                }
+                            }
+                            Ok::<(), crate::error::Error>(())
+                        }),
+                        Mode::Server => {
+                            eprintln!("[SPIDERWEB] Discovered node that should connect.");
+                            continue;
+                        }
+                    };
                 }
-            };
 
-            // TODO node connection logic then tokio select this against incoming TCP connection
-            // TODO integrate all into semaphore by wrapping in Arc and spawning tasks waiting on permit
+                // Handle an incoming TCP connection (likely from a foreign client)
+                maybe_request = server.accept() => {
+
+                }
+            }
         }
-
-
-        Ok(())
     }
 }
 
