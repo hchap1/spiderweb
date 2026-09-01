@@ -59,4 +59,8 @@ impl Discovery {
             }
         }
     }
+
+    pub fn get_identifier(&self) -> String {
+        format!("{}-{}-{}", self.ip, self.port, self.instantiation_timestamp)
+    }
 }
