@@ -47,6 +47,7 @@ impl Discovery {
     /// The older node will be the server. If the two nodes were created at the same time
     /// The lower value of the bitwise interpretation (u32) of the ipv4 address will be the server
     pub async fn decide_server(self: &Discovery, other: &Discovery) -> Res<Mode> {
+        println!("Comparing: {self:?}, {other:?}");
         if self.instantiation_timestamp < other.instantiation_timestamp {
             Ok(Mode::Server)
         } else if other.instantiation_timestamp < self.instantiation_timestamp {
