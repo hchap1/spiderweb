@@ -60,7 +60,7 @@ impl Server {
     async fn acquisition_manager(
         application_name: &'static str, port: u16, nickname: Option<String>,
         concurrency_limit: usize, channel_size: usize,
-        nodes: Arc<Mutex<HashMap<String, Node>>>
+        nodes: Arc<Mutex<HashMap<String, Node>>>, incoming_sender: Sender<Bytes>
     ) -> Res<()> {
 
         let server = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
@@ -105,12 +105,13 @@ impl Server {
                     let hashmap_clone = nodes.clone();
                     let discovery_clone = advertiser.discovery.clone();
                     let semaphore_clone = semaphore.clone();
+                    let incoming_sender_clone = incoming_sender.clone();
                     
                     match mode {
                         Mode::Client => tokio::task::spawn(async move {
                             let permit = semaphore_clone.acquire_owned().await?;
                             let identifier = discovery.get_identifier();
-                            match Node::connect(discovery_clone, discovery, channel_size, permit).await {
+                            match Node::connect(discovery_clone, discovery, channel_size, permit, incoming_sender_clone).await {
                                 Ok(node) => {
                                     let mut hashmap = hashmap_clone.lock().await;
                                     let _ = hashmap.insert(identifier, node);
@@ -144,15 +145,15 @@ impl Server {
 
                     let semaphore_clone = semaphore.clone();
                     let hashmap_clone = nodes.clone();
+                    let incoming_sender_clone = incoming_sender.clone();
 
                     tokio::task::spawn(async move {
 
                         // Take out a permit to enforce concurrency limit
                         let permit = semaphore_clone.acquire_owned().await?;
-                        let node = Node::build(socket, channel_size, permit).await?;
+                        let (node, first_packet_bytes) = Node::build_and_listen(socket, channel_size, permit, incoming_sender_clone).await?;
 
                         // This should contain serialised discovery information
-                        let first_packet_bytes = node.recv.recv().await?;
                         let discovery = match Discovery::from_bytes(first_packet_bytes) {
                             Ok(discovery) => discovery,
                             error => {
@@ -179,40 +180,61 @@ impl Server {
 /// Unified interface, the goal of which is to obfuscate who is the server, and who is the client
 pub struct Node {
     send: Sender<Bytes>,
-    recv: Receiver<Bytes>,
     task: tokio::task::JoinHandle<Res<()>>
 }
 
 impl Node {
 
     /// Connect to a foreign node. This should only be run if it has already been determined that this end is the client.
-    pub async fn connect(me: Discovery, discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Node> {
+    pub async fn connect(me: Discovery, discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<Bytes>) -> Res<Node> {
         // Form a connection to the discovery
         let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
-        let node = Node::build(socket, channel_size, permit).await?;
+        let (node, _) = Node::build(socket, channel_size, permit, incoming_sender, false).await?;
         node.send.send(me.to_bytes()?).await?;
         Ok(node)
     }
 
-    pub async fn build(stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Self> {
+    pub async fn build(stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<Bytes>, receive_one: bool) -> Res<(Self, Option<Bytes>)> {
 
         // Build Node
         let (send, queue) = bounded(channel_size);
-        let (output, recv) = bounded(channel_size);
 
         // Start processing the Node
-        let (read_half, write_half) = stream.into_split();
+        let (mut read_half, write_half) = stream.into_split();
+
+        let first_packet = match receive_one {
+            true => {
+                let mut size_buffer: [u8; 4] = [0u8; 4];
+                read_half.read_exact(&mut size_buffer).await?;
+                let size = u32::from_be_bytes(size_buffer);
+                let mut packet = BytesMut::with_capacity(size as usize);
+                read_half.read_exact(&mut packet).await?;
+                Ok::<_, crate::error::Error>(packet.freeze())
+            }.ok(),
+            false => None
+        };
+
         let send_task = tokio::task::spawn(Self::send_task(write_half, queue));
-        let recv_task = tokio::task::spawn(Self::recv_task(read_half, output));
+        let recv_task = tokio::task::spawn(Self::recv_task(read_half, incoming_sender));
         let task = tokio::task::spawn(Self::node_heartbeat(permit, send_task, recv_task));
 
         Ok(
-            Node {
-                send,
-                recv,
-                task
-            }
+            (
+                Node {
+                    send,
+                    task
+                },
+                first_packet
+            )
         )
+    }
+    
+    async fn build_and_listen(stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<Bytes>) -> Res<(Node, Bytes)> {
+        let (node, first_packet) = Node::build(stream, channel_size, permit, incoming_sender, true).await?;
+        match first_packet {
+            Some(first_packet) => Ok((node, first_packet)),
+            None => Err(crate::error::Error::NoFirstPacket)
+        }
     }
 
     async fn send_task(mut write_half: OwnedWriteHalf, queue: Receiver<Bytes>) -> Res<()> {

@@ -46,7 +46,10 @@ pub enum Error {
     TokioAcquireError(#[from] tokio::sync::AcquireError),
 
     #[error("Failed to serialise: {:?}", .0)]
-    RancorError(#[from] rkyv::rancor::Error)
+    RancorError(#[from] rkyv::rancor::Error),
+
+    #[error("Failed to receive first packet from client")]
+    NoFirstPacket,
 }
 
 pub type Res<T> = Result<T, Error>;
