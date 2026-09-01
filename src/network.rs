@@ -19,6 +19,7 @@ use tokio::net::tcp::OwnedWriteHalf;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::sync::Mutex;
 use bytes::Bytes;
@@ -74,7 +75,7 @@ impl Server {
             match mode {
                 Mode::Client => tokio::task::spawn(async {
                     let permit = sempahore_clone.acquire_owned().await?;
-                    Node::connect()
+                    Node::connect(discovery, channel_size, permit)
                 })
             }
 
@@ -92,20 +93,19 @@ impl Server {
 pub struct Node {
     send: Sender<Bytes>,
     recv: Receiver<Bytes>,
-    send_task: tokio::task::JoinHandle<Res<()>>,
-    recv_task: tokio::task::JoinHandle<Res<()>>
+    task: tokio::task::JoinHandle<Res<()>>
 }
 
 impl Node {
 
     /// Connect to a foreign node. This should only be run if it has already been determined that this end is the client.
-    pub async fn connect(discovery: Discovery, channel_size: usize) -> Res<Option<Node>> {
+    pub async fn connect(discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Option<Node>> {
         // Form a connection to the discovery
         let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
-        Node::build(socket, channel_size).await.map(Some)
+        Node::build(socket, channel_size, permit).await.map(Some)
     }
 
-    pub async fn build(stream: TcpStream, channel_size: usize) -> Res<Self> {
+    pub async fn build(stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Self> {
 
         // Build Node
         let (send, queue) = bounded(channel_size);
@@ -115,13 +115,13 @@ impl Node {
         let (read_half, write_half) = stream.into_split();
         let send_task = tokio::task::spawn(Self::send_task(write_half, queue));
         let recv_task = tokio::task::spawn(Self::recv_task(read_half, output));
+        let task = tokio::task::spawn(Self::node_heartbeat(permit, send_task, recv_task));
 
         Ok(
             Node {
                 send,
                 recv,
-                send_task,
-                recv_task
+                task
             }
         )
     }
@@ -156,6 +156,18 @@ impl Node {
             output.send(bytes.freeze()).await?;
         }
 
+        Ok(())
+    }
+
+    /// Hold a permit from the semaphore and both tasks.
+    /// Enforces connection concurrency limit
+    async fn node_heartbeat(
+        _permit: OwnedSemaphorePermit,
+        send_task: JoinHandle<Res<()>>,
+        recv_task: JoinHandle<Res<()>>
+    ) -> Res<()> {
+        send_task.await?;
+        recv_task.await?;
         Ok(())
     }
 }
