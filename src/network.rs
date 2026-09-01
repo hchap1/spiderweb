@@ -30,10 +30,30 @@ use tokio::task::JoinHandle;
 /// Also tracks individual nodes
 pub struct Server {
     nodes: Arc<Mutex<HashMap<String, Node>>>,
-    acquisition_task: JoinHandle<Res<()>>
+
+    pub incoming: Receiver <Bytes>,
+    pub outgoing: Sender   <Bytes>,
+
+    // Outgoing messages
+    send_task: JoinHandle<Res<()>>,
+    acquisition_task: JoinHandle<Res<()>>,
 }
 
 impl Server {
+
+    pub fn build(
+        application_name: &'static str, port: u16, nickname: Option<String>,
+        concurrency_limit: usize, channel_size: usize
+    ) -> Res<Self> {
+
+        // Create channels for owned tasks
+        let (incoming_sender, incoming_receiver) = bounded(channel_size);
+        let (outgoing_sender, outgoing_receiver) = bounded(channel_size);
+    }
+
+    async fn send(outgoing_receiver: Receiver<Bytes>, nodes: Arc<Mutex<HashMap<String, Node>>>) -> Res<()> {
+
+    }
 
     /// This function is responsible for receiving new mDNS discoveries AND foreign clients
     /// it is also responsible for maintaining concurrency limit
@@ -83,16 +103,20 @@ impl Server {
                     };
 
                     let hashmap_clone = nodes.clone();
+                    let discovery_clone = advertiser.discovery.clone();
                     let semaphore_clone = semaphore.clone();
                     
                     match mode {
                         Mode::Client => tokio::task::spawn(async move {
                             let permit = semaphore_clone.acquire_owned().await?;
                             let identifier = discovery.get_identifier();
-                            match Node::connect(discovery, channel_size, permit).await {
+                            match Node::connect(discovery_clone, discovery, channel_size, permit).await {
                                 Ok(node) => {
                                     let mut hashmap = hashmap_clone.lock().await;
                                     let _ = hashmap.insert(identifier, node);
+
+                                    // TODO remove debug print
+                                    println!("[SPIDERWEB INFO] Successfully connected to foreign Node");
                                 },
                                 Err(e) => {
                                     eprintln!("[SPIDERWEB] Failed to connect to foreign node as a client. {e:?}");
@@ -140,6 +164,9 @@ impl Server {
                         let mut hashmap = hashmap_clone.lock().await;
                         let _ = hashmap.insert(discovery.get_identifier(), node);
 
+                        // TODO remove debug print
+                        println!("[SPIDERWEB DEBUG] Successfully accepted and parsed foreign Node");
+
                         Ok::<(), crate::error::Error>(())
                     });
                 }
@@ -159,12 +186,12 @@ pub struct Node {
 impl Node {
 
     /// Connect to a foreign node. This should only be run if it has already been determined that this end is the client.
-    pub async fn connect(discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Node> {
+    pub async fn connect(me: Discovery, discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Node> {
         // Form a connection to the discovery
         let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
-
-        // TODO send discovery information about myself
-        Node::build(socket, channel_size, permit).await
+        let node = Node::build(socket, channel_size, permit).await?;
+        node.send.send(me.to_bytes()?).await?;
+        Ok(node)
     }
 
     pub async fn build(stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit) -> Res<Self> {
