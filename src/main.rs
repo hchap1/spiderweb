@@ -4,6 +4,14 @@ mod discovery;
 mod network;
 mod error;
 
-fn main() {
-    println!("Hello, world!");
+use network::Server;
+
+#[tokio::main]
+async fn main() {
+    let server = Server::build("spiderweb", 1234, None, 5, 1024);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    
+    for i in server.get_foreign_identifiers().await {
+        println!("Found: {i}");
+    }
 }
