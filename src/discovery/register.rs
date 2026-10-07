@@ -47,7 +47,7 @@ fn blocking_relay<T>(mdns_receiver: mdns_sd::Receiver<T>, async_sender: async_ch
 }
 
 /// Advertises the service over MDNS
-pub async fn register(application: &'static str, port: u16, mut nickname: Option<String>) -> Res<Advertiser> {
+pub async fn register(application: &'static str, port: u16, nickname: Option<String>) -> Res<Advertiser> {
 
     // first retrieve suitable local ipv4 address
     let ipv4 = match tokio::task::spawn_blocking(local_ip_address::local_ip).await?? {

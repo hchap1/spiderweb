@@ -4,14 +4,17 @@ mod discovery;
 mod network;
 mod error;
 
-use network::Server;
+use crate::discovery::register::register;
+use crate::error::Res;
 
 #[tokio::main]
-async fn main() {
-    let server = Server::build("spiderweb", 1234, None, 5, 1024);
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    
-    for i in server.get_foreign_identifiers().await {
-        println!("Found: {i}");
+async fn main() -> Res<()> {
+    let advertiser = register("mdnstest", 19000_u16, None).await?;
+    let receiver = advertiser.get_event_stream()?;
+
+    while let Ok(event) = receiver.recv().await {
+        println!("EVENT: {event:?}");
     }
+
+    Ok(())
 }

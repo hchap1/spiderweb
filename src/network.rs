@@ -130,6 +130,28 @@ impl Server {
                         }
                     };
 
+                    // Make sure that the discovery isn't already an active connection
+                    let exists = {
+                        if discovery.get_identifier() == advertiser.discovery.get_identifier() {
+                            true
+                        } else {
+                            let hashmap = nodes.lock().await;
+                            if let Some(node) = hashmap.get(&discovery.get_identifier()) {
+                                !node.task.is_finished()
+                            } else {
+                                false
+                            }
+                        }
+                    };
+
+                    if exists {
+                        println!("[SPIDERWEB] Found existing or self connection, skipping");
+                        continue;
+                    } else {
+                        println!("[SPIDERWEB] Found new connection!");
+                    }
+
+
                     let mode = match advertiser.discovery.decide_server(&discovery).await {
                         Ok(v) => v,
                         Err(e) => {
@@ -147,7 +169,9 @@ impl Server {
                         Mode::Client => tokio::task::spawn(async move {
                             let permit = semaphore_clone.acquire_owned().await?;
                             let identifier = discovery.get_identifier();
-                            match Node::connect(discovery_clone, discovery, channel_size, permit, incoming_sender_clone).await {
+                            match Node::connect(
+                                discovery_clone, discovery, channel_size, permit, incoming_sender_clone
+                            ).await {
                                 Ok(node) => {
                                     let mut hashmap = hashmap_clone.lock().await;
                                     let _ = hashmap.insert(identifier, node);
@@ -188,7 +212,9 @@ impl Server {
 
                         // Take out a permit to enforce concurrency limit
                         let permit = semaphore_clone.acquire_owned().await?;
-                        let (node, first_packet_bytes) = Node::build_and_listen(my_identifier, socket, channel_size, permit, incoming_sender_clone).await?;
+                        let (node, first_packet_bytes) = Node::build_and_listen(
+                            my_identifier, socket, channel_size, permit, incoming_sender_clone
+                        ).await?;
 
                         // This should contain serialised discovery information
                         let discovery = match Discovery::from_bytes(first_packet_bytes) {
@@ -223,7 +249,13 @@ pub struct Node {
 impl Node {
 
     /// Connect to a foreign node. This should only be run if it has already been determined that this end is the client.
-    pub async fn connect(me: Discovery, discovery: Discovery, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<(Bytes, String)>) -> Res<Node> {
+    pub async fn connect(
+        me: Discovery,
+        discovery: Discovery,
+        channel_size: usize,
+        permit: OwnedSemaphorePermit,
+        incoming_sender: Sender<(Bytes, String)>
+    ) -> Res<Node> {
         // Form a connection to the discovery
         let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
         let (node, _) = Node::build(me.get_identifier(), socket, channel_size, permit, incoming_sender, false).await?;
@@ -323,8 +355,8 @@ impl Node {
         send_task: JoinHandle<Res<()>>,
         recv_task: JoinHandle<Res<()>>
     ) -> Res<()> {
-        send_task.await?;
-        recv_task.await?;
+        let _ = send_task.await?;
+        let _ = recv_task.await?;
         Ok(())
     }
 }
