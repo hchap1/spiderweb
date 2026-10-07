@@ -68,7 +68,7 @@ pub async fn register(application: &'static str, port: u16, nickname: Option<Str
     let instance_name = join_delim([ip_port_string, application.to_string()], "-");
 
     // The host_name under which to register the mDNS
-    let host_name = join([&ip_string, ".local."]);
+    let host_name = join([&ip_string, "local"]) + ".";
 
     // instantiation_timestamp
     let instantiation_timestamp = std::time::SystemTime::now()
