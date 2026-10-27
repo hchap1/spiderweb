@@ -1,8 +1,0 @@
-/home/hc/dev/spiderweb/.devenv/bootstrap/bootstrapLib.nix
-/home/hc/dev/spiderweb/.devenv/bootstrap/default.nix
-/home/hc/dev/spiderweb/.devenv/bootstrap/resolve-lock.nix
-/home/hc/dev/spiderweb/devenv.local.nix
-/home/hc/dev/spiderweb/devenv.lock
-/home/hc/dev/spiderweb/devenv.nix
-/home/hc/.config/nixpkgs/overlays
-/home/hc/.config/nixpkgs/overlays.nix
