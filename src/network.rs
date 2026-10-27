@@ -246,7 +246,7 @@ impl Server {
                             let hashmap = nodes.lock().await;
                             if let Some(node) = hashmap.get(&discovery.get_identifier()) {
                                 match node.task.as_ref() {
-                                    Some(t) => t.is_finished(),
+                                    Some(t) => !t.is_finished(),
                                     None => false
                                 }
                             } else {
