@@ -1,3 +1,7 @@
+# Rust
 /target
-/.devenv
-/.direnv
+
+# devenv / direnv
+.devenv*
+devenv.local.nix
+.direnv
