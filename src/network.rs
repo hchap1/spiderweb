@@ -82,6 +82,8 @@ pub struct Server {
     // Trigger graceful shutdown
     _killswitch: Option<tokio::sync::oneshot::Sender<()>>,
     _incoming_sender_part: Sender<(Bytes, String)>,
+
+    channel_size: usize,
 }
 
 impl Server {
@@ -112,7 +114,8 @@ impl Server {
             _send_task: Some(_send_task),
             _acquisition_task: Some(_acquisition_task),
             _killswitch: Some(killswitch),
-            _incoming_sender_part
+            _incoming_sender_part,
+            channel_size
         }
     }
 
@@ -132,6 +135,19 @@ impl Server {
     pub async fn get_foreign_identifiers(&self) -> Vec<String> {
         let hashmap = self.nodes.lock().await;
         hashmap.keys().cloned().collect()
+    }
+
+    pub fn detach_send_all(&self) -> Sender<Bytes> {
+        let (sender, receiver) = bounded(self.channel_size);
+        let outgoing = self.outgoing.clone();
+
+        tokio::task::spawn(async move {
+            while let Ok(bytes) = receiver.recv().await {
+                let _ = outgoing.send((bytes, vec![])).await;
+            }
+        });
+
+        sender
     }
 
     /// Distribute a packet to a selection of identifiers
