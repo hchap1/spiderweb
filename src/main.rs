@@ -36,5 +36,7 @@ async fn main() -> Res<()> {
         server.graceful_shutdown().await?;
     }
 
+    println!("Gracefully shutdown!");
+
     Ok(())
 }

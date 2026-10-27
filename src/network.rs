@@ -336,6 +336,8 @@ impl Server {
                 }
 
                 _ = &mut killswitch_receiver => {
+                    let mut nodes = nodes.lock().await;
+                    nodes.clear();
                     _ = send_killswitch.send(());
                     break;
                 }
