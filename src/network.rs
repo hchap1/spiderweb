@@ -229,7 +229,10 @@ impl Server {
                         } else {
                             let hashmap = nodes.lock().await;
                             if let Some(node) = hashmap.get(&discovery.get_identifier()) {
-                                !node.task.is_finished()
+                                match node.task.as_ref() {
+                                    Some(t) => t.is_finished(),
+                                    None => false
+                                }
                             } else {
                                 false
                             }
@@ -337,6 +340,11 @@ impl Server {
 
                 _ = &mut killswitch_receiver => {
                     let mut nodes = nodes.lock().await;
+
+                    for node in nodes.values_mut() {
+                        node.kill().await;
+                    }
+
                     nodes.clear();
                     _ = send_killswitch.send(());
                     break;
@@ -364,7 +372,8 @@ pub enum IdentificationMethod {
 /// Unified interface, the goal of which is to obfuscate who is the server, and who is the client
 pub struct Node {
     send: Sender<Bytes>,
-    task: tokio::task::JoinHandle<Res<()>>
+    task: Option<tokio::task::JoinHandle<Res<()>>>,
+    node_killswitch: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl Node {
@@ -433,16 +442,19 @@ impl Node {
         }?;
 
         let (killswitch, terminator) = tokio::sync::oneshot::channel();
+        let (node_killswitch, node_terminator) = tokio::sync::oneshot::channel();
 
         let send_task = tokio::task::spawn(Self::send_task(write_half, queue, terminator));
-        let recv_task = tokio::task::spawn(Self::recv_task(read_half, incoming_sender, discovery.get_identifier()));
+        let recv_task = tokio::task::spawn(Self::recv_task(read_half, incoming_sender, discovery.get_identifier(), node_terminator));
         let task = tokio::task::spawn(Self::node_heartbeat(permit, discovery.get_identifier(), send_task, recv_task, killswitch, request_delete));
+
 
         Ok(
             (
                 Node {
                     send,
-                    task
+                    task: Some(task),
+                    node_killswitch: Some(node_killswitch)
                 },
                 discovery
             )
@@ -491,27 +503,40 @@ impl Node {
         Ok(())
     }
 
-    async fn recv_task(mut read_half: OwnedReadHalf, output: Sender<(Bytes, String)>, identifier: String) -> Res<()> {
+    async fn recv_task(mut read_half: OwnedReadHalf, output: Sender<(Bytes, String)>, identifier: String, mut terminate: tokio::sync::oneshot::Receiver<()>) -> Res<()> {
         let mut size_buffer = [0u8; 4];
-        while read_half.read_exact(&mut size_buffer).await.is_ok() {
 
-            // Process size header
-            let size: usize = u32::from_be_bytes(size_buffer) as usize;
+        loop {
+            tokio::select! {
+                read_status = read_half.read_exact(&mut size_buffer) => {
 
-            // Buffer the bytes
-            let mut bytes = BytesMut::with_capacity(size);
+                    if !read_status.is_ok() {
+                        break;
+                    }
 
-            while bytes.len() < size {
-                let n = read_half.read_buf(&mut bytes).await?;
+                    // Process size header
+                    let size: usize = u32::from_be_bytes(size_buffer) as usize;
 
-                // EOF
-                if n == 0 {
-                    return Err(crate::error::Error::EOF)
+                    // Buffer the bytes
+                    let mut bytes = BytesMut::with_capacity(size);
+
+                    while bytes.len() < size {
+                        let n = read_half.read_buf(&mut bytes).await?;
+
+                        // EOF
+                        if n == 0 {
+                            return Err(crate::error::Error::EOF)
+                        }
+                    }
+
+                    // Send bytes object out into the world
+                    output.send((bytes.freeze(), identifier.clone())).await?;
+                }
+
+                _ = &mut terminate => {
+                    break;
                 }
             }
-
-            // Send bytes object out into the world
-            output.send((bytes.freeze(), identifier.clone())).await?;
         }
 
         Ok(())
@@ -532,5 +557,10 @@ impl Node {
         let _ = send_task.await?;
         request_delete.send(identifier).await?;
         Ok(())
+    }
+
+    async fn kill(&mut self) {
+        if let Some(k) = self.node_killswitch.take() { let _ = k.send(()); }
+        if let Some(n) = self.task.take() { let _ = n.await; }
     }
 }
