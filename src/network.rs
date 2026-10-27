@@ -300,13 +300,23 @@ impl Node {
                 let mut size_buffer: [u8; 4] = [0u8; 4];
                 read_half.read_exact(&mut size_buffer).await?;
                 println!("[SPIDERWEB] Pulled size buffer: {size_buffer:?}");
-                let size = u32::from_be_bytes(size_buffer);
+                let size = u32::from_be_bytes(size_buffer) as usize;
                 println!("[SPIDERWEB] This is {size} bytes.");
-                let mut packet = BytesMut::with_capacity(size as usize);
-                let bytes_read = read_half.read_exact(&mut packet).await?;
-                println!("[SPIDERWEB] Read {bytes_read:?} bytes.");
-                println!("[SPIDERWEB] The bytes were: {packet:?}");
-                Ok::<_, crate::error::Error>(packet.freeze())
+                let mut bytes = BytesMut::with_capacity(size);
+                // Buffer the bytes
+
+                while bytes.len() < size {
+                    let n = read_half.read_buf(&mut bytes).await?;
+
+                    // EOF
+                    if n == 0 {
+                        return Err(crate::error::Error::EOF)
+                    }
+                }
+
+                println!("[SPIDERWEB] Read {size:?} bytes.");
+                println!("[SPIDERWEB] The bytes were: {bytes:?}");
+                Ok::<_, crate::error::Error>(bytes.freeze())
             }.ok(),
             false => None
         };
@@ -356,14 +366,22 @@ impl Node {
 
     async fn recv_task(mut read_half: OwnedReadHalf, output: Sender<(Bytes, String)>, identifier: String) -> Res<()> {
         let mut size_buffer = [0u8; 4];
-        while let Ok(_) = read_half.read_exact(&mut size_buffer).await {
+        while read_half.read_exact(&mut size_buffer).await.is_ok() {
 
             // Process size header
             let size: usize = u32::from_be_bytes(size_buffer) as usize;
 
             // Buffer the bytes
             let mut bytes = BytesMut::with_capacity(size);
-            read_half.read_exact(&mut bytes).await?;
+
+            while bytes.len() < size {
+                let n = read_half.read_buf(&mut bytes).await?;
+
+                // EOF
+                if n == 0 {
+                    return Err(crate::error::Error::EOF)
+                }
+            }
 
             // Send bytes object out into the world
             output.send((bytes.freeze(), identifier.clone())).await?;

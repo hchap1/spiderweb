@@ -1,4 +1,3 @@
-use bytes::Bytes;
 use thiserror::Error;
 
 use crate::discovery::register::Advertiser;
@@ -50,6 +49,10 @@ pub enum Error {
 
     #[error("Failed to receive first packet from client")]
     NoFirstPacket,
+
+    #[error("Unexpected EOF when reading packet of specified size")]
+    #[allow(clippy::upper_case_acronyms)]
+    EOF,
 }
 
 impl<T> From<async_channel::SendError<T>> for Error {
