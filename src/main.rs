@@ -27,7 +27,7 @@ async fn main() -> Res<()> {
     }
 
     for client in clients {
-        let res = server.outgoing.send((Bytes::from_static(&[0, 1, 2, 3, 4, 5]), vec![client.clone()])).await;
+        let res = server.outgoing.send((Bytes::from_static(&[5, 4, 3, 3, 4, 5]), vec![client.clone()])).await;
         println!("Sent to {client}: {res:?}");
     }
 

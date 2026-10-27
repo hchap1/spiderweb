@@ -208,7 +208,6 @@ impl Server {
                         }
                     };
 
-                    let my_identifier = advertiser.discovery.get_identifier();
                     let semaphore_clone = semaphore.clone();
                     let hashmap_clone = nodes.clone();
                     let incoming_sender_clone = incoming_sender.clone();
@@ -217,27 +216,12 @@ impl Server {
 
                         // Take out a permit to enforce concurrency limit
                         let permit = semaphore_clone.acquire_owned().await?;
-                        let (node, first_packet_bytes) = Node::build_and_listen(
-                            my_identifier, socket, channel_size, permit, incoming_sender_clone
+                        let (node, discovery) = Node::build_and_listen(
+                            socket, channel_size, permit, incoming_sender_clone
                         ).await?;
-
-                        println!("[SPIDERWEB] Received first bytes from new connection: {first_packet_bytes:?}");
-
-                        // This should contain serialised discovery information
-                        let discovery = match Discovery::from_bytes(first_packet_bytes) {
-                            Ok(discovery) => discovery,
-                            error => {
-                                eprintln!("[SPIDERWEB] Refusing client due to malformed discovery header.");
-                                eprintln!("[SPIDERWEB] Specifically: {error:?}");
-                                return error.map(|_| ());
-                            }
-                        };
 
                         let mut hashmap = hashmap_clone.lock().await;
                         let _ = hashmap.insert(discovery.get_identifier(), node);
-
-                        // TODO remove debug print
-                        println!("[SPIDERWEB DEBUG] Successfully accepted and parsed foreign Node");
 
                         Ok::<(), crate::error::Error>(())
                     });
@@ -245,6 +229,14 @@ impl Server {
             }
         }
     }
+}
+
+/// Client already knows the server it connects to
+/// Server needs to wait for the Client to identify itself
+#[derive(Clone, Debug)]
+pub enum IdentificationMethod {
+    Known(Discovery), // the discovery this node is connecting to
+    Listen,           // listen for the node to send its identity packet
 }
 
 /// The point of contact to a foreign server/client
@@ -273,18 +265,17 @@ impl Node {
         socket.write_all(&size_header.to_be_bytes()).await?;
         socket.write_all(&bytes).await?;
 
-        let (node, _) = Node::build(me.get_identifier(), socket, channel_size, permit, incoming_sender, false).await?;
+        let (node, _) = Node::build(socket, channel_size, permit, incoming_sender, IdentificationMethod::Known(discovery)).await?;
         Ok(node)
     }
 
     pub async fn build(
-        identifier: String,
         stream: TcpStream,
         channel_size: usize,
         permit: OwnedSemaphorePermit,
         incoming_sender: Sender<(Bytes, String)>,
-        receive_one: bool
-    ) -> Res<(Self, Option<Bytes>)> {
+        identification_method: IdentificationMethod
+    ) -> Res<(Self, Discovery)> {
 
         // Build Node
         let (send, queue) = bounded(channel_size);
@@ -292,8 +283,8 @@ impl Node {
         // Start processing the Node
         let (mut read_half, write_half) = stream.into_split();
 
-        let first_packet = match receive_one {
-            true => {
+        let discovery = match identification_method {
+            IdentificationMethod::Listen => {
                 let mut size_buffer: [u8; 4] = [0u8; 4];
                 read_half.read_exact(&mut size_buffer).await?;
                 let size = u32::from_be_bytes(size_buffer) as usize;
@@ -309,13 +300,17 @@ impl Node {
                     }
                 }
 
-                Ok::<_, crate::error::Error>(bytes.freeze())
-            }.ok(),
-            false => None
-        };
+                let bytes = bytes.freeze();
+
+                // This should contain serialised discovery information
+                Discovery::from_bytes(bytes)
+            },
+
+            IdentificationMethod::Known(discovery) => Ok(discovery)
+        }?;
 
         let send_task = tokio::task::spawn(Self::send_task(write_half, queue));
-        let recv_task = tokio::task::spawn(Self::recv_task(read_half, incoming_sender, identifier));
+        let recv_task = tokio::task::spawn(Self::recv_task(read_half, incoming_sender, discovery.get_identifier()));
         let task = tokio::task::spawn(Self::node_heartbeat(permit, send_task, recv_task));
 
         Ok(
@@ -324,19 +319,15 @@ impl Node {
                     send,
                     task
                 },
-                first_packet
+                discovery
             )
         )
     }
     
     async fn build_and_listen(
-        identifier: String, stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<(Bytes, String)>
-    ) -> Res<(Node, Bytes)> {
-        let (node, first_packet) = Node::build(identifier, stream, channel_size, permit, incoming_sender, true).await?;
-        match first_packet {
-            Some(first_packet) => Ok((node, first_packet)),
-            None => Err(crate::error::Error::NoFirstPacket)
-        }
+        stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<(Bytes, String)>
+    ) -> Res<(Node, Discovery)> {
+        Node::build(stream, channel_size, permit, incoming_sender, IdentificationMethod::Listen).await
     }
 
     async fn send_task(mut write_half: OwnedWriteHalf, queue: Receiver<Bytes>) -> Res<()> {
