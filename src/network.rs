@@ -186,7 +186,7 @@ impl Server {
     ) -> Res<Log> {
 
         let server = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
-        let advertiser = register(application_name, port, nickname).await?;
+        let mut advertiser = register(application_name, port, nickname).await?;
         let semaphore = Arc::new(Semaphore::new(concurrency_limit));
         let mdns_event_receiver = advertiser.get_event_stream()?;
 
@@ -339,6 +339,8 @@ impl Server {
                 }
 
                 _ = &mut killswitch_receiver => {
+
+                    advertiser.shutdown();
                     let mut nodes = nodes.lock().await;
 
                     for node in nodes.values_mut() {
@@ -347,6 +349,7 @@ impl Server {
 
                     nodes.clear();
                     _ = send_killswitch.send(());
+
                     break;
                 }
             }
@@ -474,7 +477,6 @@ impl Node {
     async fn send_task(mut write_half: OwnedWriteHalf, queue: Receiver<Bytes>, mut terminate: tokio::sync::oneshot::Receiver<()>) -> Res<()> {
 
         loop {
-        // while let Ok(bytes) = queue.recv().await {
         
             tokio::select! {
                     

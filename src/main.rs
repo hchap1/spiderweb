@@ -38,5 +38,6 @@ async fn main() -> Res<()> {
 
     println!("Gracefully shutdown!");
 
+    drop(server);
     Ok(())
 }

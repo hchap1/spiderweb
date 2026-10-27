@@ -32,6 +32,10 @@ impl Advertiser {
         let stream = self.daemon.browse(&self.service_type)?;
         Ok(deploy_relay(stream))
     }
+
+    pub fn shutdown(&mut self) {
+        let _ = self.daemon.shutdown();
+    }
 }
 
 fn deploy_relay<T: std::marker::Send + 'static>(mdns_receiver: mdns_sd::Receiver<T>) -> async_channel::Receiver<T> {
