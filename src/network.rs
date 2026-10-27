@@ -298,6 +298,7 @@ impl Node {
             true => {
                 let mut size_buffer: [u8; 4] = [0u8; 4];
                 read_half.read_exact(&mut size_buffer).await?;
+                println!("[SPIDERWEB] Pulled size buffer: {size_buffer:?}");
                 let size = u32::from_be_bytes(size_buffer);
                 let mut packet = BytesMut::with_capacity(size as usize);
                 read_half.read_exact(&mut packet).await?;
