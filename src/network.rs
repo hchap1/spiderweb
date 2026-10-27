@@ -197,6 +197,9 @@ impl Server {
                 // Handle an incoming TCP connection (likely from a foreign client)
                 // First, must wait for a packet containing the serialised discovery information
                 maybe_request = server.accept() => {
+
+                    println!("[SPIDERWEB] Foreign-node attempted connection.");
+
                     let (socket, _) = match maybe_request {
                         Ok(v) => v,
                         Err(e) => {
@@ -217,6 +220,8 @@ impl Server {
                         let (node, first_packet_bytes) = Node::build_and_listen(
                             my_identifier, socket, channel_size, permit, incoming_sender_clone
                         ).await?;
+
+                        println!("[SPIDERWEB] Received first bytes from new connection");
 
                         // This should contain serialised discovery information
                         let discovery = match Discovery::from_bytes(first_packet_bytes) {
