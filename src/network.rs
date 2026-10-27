@@ -265,10 +265,16 @@ impl Node {
         incoming_sender: Sender<(Bytes, String)>
     ) -> Res<Node> {
         // Form a connection to the discovery
-        let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
+        let mut socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
+
+        // Send an initial packet with details of self
+        let bytes = me.to_bytes()?;
+        let size_header = bytes.len() as u32;
+        socket.write_all(&size_header.to_be_bytes()).await?;
+        socket.write_all(&bytes).await?;
+
         let (node, _) = Node::build(me.get_identifier(), socket, channel_size, permit, incoming_sender, false).await?;
         println!("[SPIDERWEB] Serialising self: {:?}", me.to_bytes()?);
-        node.send.send(me.to_bytes()?).await?;
         println!("[SPIDERWEB] Registered serialised identity packet to be sent.");
         Ok(node)
     }
@@ -319,6 +325,7 @@ impl Node {
         identifier: String, stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<(Bytes, String)>
     ) -> Res<(Node, Bytes)> {
         let (node, first_packet) = Node::build(identifier, stream, channel_size, permit, incoming_sender, true).await?;
+        println!("[SPIDERWEB] First packet, straight out of node: {first_packet:?}");
         match first_packet {
             Some(first_packet) => Ok((node, first_packet)),
             None => Err(crate::error::Error::NoFirstPacket)
