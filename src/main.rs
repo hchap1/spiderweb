@@ -13,7 +13,7 @@ use crate::error::Res;
 async fn main() -> Res<()> {
 
     let server = Server::build("spiderweb_test", 12345, Some(String::from("PC")), 10, 100);
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     while server.get_foreign_identifiers().await.is_empty() {
         println!("Waiting for a client...");
@@ -31,10 +31,9 @@ async fn main() -> Res<()> {
         println!("Sent to {client}: {res:?}");
     }
 
-    let incoming = server.incoming.recv().await.unwrap();
-    println!("Received: {:?} from {}", incoming.0, incoming.1);
-
-    tokio::time::sleep(tokio::time::Duration::from_secs(120)).await;
+    while let Ok(incoming) = server.incoming.recv().await {
+        println!("Received: {:?} from {}", incoming.0, incoming.1);
+    }
 
     Ok(())
 }
