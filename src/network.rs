@@ -268,14 +268,15 @@ impl Node {
         let mut socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
 
         // Send an initial packet with details of self
+        println!("[SPIDERWEB] Serialising self: {:?}", me.to_bytes()?);
         let bytes = me.to_bytes()?;
         let size_header = bytes.len() as u32;
+        println!("[SPIDERWEB] Serialised size: {size_header}");
         socket.write_all(&size_header.to_be_bytes()).await?;
         socket.write_all(&bytes).await?;
+        println!("[SPIDERWEB] Registered serialised identity packet to be sent.");
 
         let (node, _) = Node::build(me.get_identifier(), socket, channel_size, permit, incoming_sender, false).await?;
-        println!("[SPIDERWEB] Serialising self: {:?}", me.to_bytes()?);
-        println!("[SPIDERWEB] Registered serialised identity packet to be sent.");
         Ok(node)
     }
 
@@ -301,7 +302,9 @@ impl Node {
                 println!("[SPIDERWEB] Pulled size buffer: {size_buffer:?}");
                 let size = u32::from_be_bytes(size_buffer);
                 let mut packet = BytesMut::with_capacity(size as usize);
-                read_half.read_exact(&mut packet).await?;
+                let bytes_read = read_half.read_exact(&mut packet).await?;
+                println!("[SPIDERWEB] Read {bytes_read:?} bytes.");
+                println!("[SPIDERWEB] The bytes were: {packet:?}");
                 Ok::<_, crate::error::Error>(packet.freeze())
             }.ok(),
             false => None
