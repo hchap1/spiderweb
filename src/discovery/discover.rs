@@ -14,6 +14,7 @@ pub struct Discovery {
     pub nickname: Option<String>
 }
 
+#[derive(Debug, Clone)]
 pub enum Mode {
     Server,
     Client

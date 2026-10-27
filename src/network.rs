@@ -160,6 +160,8 @@ impl Server {
                         }
                     };
 
+                    println!("[SPIDERWEB] Decided mode for new connection: {mode:?}");
+
                     let hashmap_clone = nodes.clone();
                     let discovery_clone = advertiser.discovery.clone();
                     let semaphore_clone = semaphore.clone();
@@ -221,6 +223,7 @@ impl Server {
                             Ok(discovery) => discovery,
                             error => {
                                 eprintln!("[SPIDERWEB] Refusing client due to malformed discovery header.");
+                                eprintln!("[SPIDERWEB] Specifically: {error:?}");
                                 return error.map(|_| ());
                             }
                         };
