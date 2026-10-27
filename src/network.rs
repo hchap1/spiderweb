@@ -267,7 +267,9 @@ impl Node {
         // Form a connection to the discovery
         let socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
         let (node, _) = Node::build(me.get_identifier(), socket, channel_size, permit, incoming_sender, false).await?;
+        println!("[SPIDERWEB] Serialising self: {:?}", me.to_bytes()?);
         node.send.send(me.to_bytes()?).await?;
+        println!("[SPIDERWEB] Registered serialised identity packet to be sent.");
         Ok(node)
     }
 
@@ -325,6 +327,8 @@ impl Node {
 
     async fn send_task(mut write_half: OwnedWriteHalf, queue: Receiver<Bytes>) -> Res<()> {
         while let Ok(bytes) = queue.recv().await {
+
+            println!("[SPIDERWEB] Received bytes to send: {bytes:?}");
 
             // Write length header into queue
             let length: u32 = bytes.len() as u32;
