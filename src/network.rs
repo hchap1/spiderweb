@@ -221,7 +221,7 @@ impl Server {
                             my_identifier, socket, channel_size, permit, incoming_sender_clone
                         ).await?;
 
-                        println!("[SPIDERWEB] Received first bytes from new connection");
+                        println!("[SPIDERWEB] Received first bytes from new connection: {first_packet_bytes:?}");
 
                         // This should contain serialised discovery information
                         let discovery = match Discovery::from_bytes(first_packet_bytes) {
