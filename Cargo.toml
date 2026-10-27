@@ -1,7 +1,7 @@
 [package]
 name = "spiderweb-async"
 description = "Minimal crate allowing P2P connection with automatic MDNS resolution connecting nodes over TCP"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 repository = "https://github.com/hchap1/spiderweb"
 license = "MIT OR Apache-2.0"
