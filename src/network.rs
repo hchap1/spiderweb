@@ -45,7 +45,6 @@ impl Server {
         application_name: &'static str, port: u16, nickname: Option<String>,
         concurrency_limit: usize, channel_size: usize
     ) -> Self {
-
         // Create channels for owned tasks
         let (incoming_sender, incoming) = bounded(channel_size);
         let (outgoing, outgoing_receiver) = bounded(channel_size);
@@ -61,7 +60,7 @@ impl Server {
             incoming,
             outgoing,
             send_task,
-            acquisition_task
+            acquisition_task,
         }
     }
 
@@ -103,6 +102,9 @@ impl Server {
         let advertiser = register(application_name, port, nickname).await?;
         let semaphore = Arc::new(Semaphore::new(concurrency_limit));
         let mdns_event_receiver = advertiser.get_event_stream()?;
+
+        // Sender/Receiver pair for deleting nodes
+        let (request_delete, garbage_collector) = bounded(channel_size);
 
         loop {
             tokio::select! {
@@ -166,13 +168,15 @@ impl Server {
                     let discovery_clone = advertiser.discovery.clone();
                     let semaphore_clone = semaphore.clone();
                     let incoming_sender_clone = incoming_sender.clone();
+
+                    let request_delete_clone = request_delete.clone();
                     
                     match mode {
                         Mode::Client => tokio::task::spawn(async move {
                             let permit = semaphore_clone.acquire_owned().await?;
                             let identifier = discovery.get_identifier();
                             match Node::connect(
-                                discovery_clone, discovery, channel_size, permit, incoming_sender_clone
+                                discovery_clone, discovery, channel_size, permit, incoming_sender_clone, request_delete_clone
                             ).await {
                                 Ok(node) => {
                                     let mut hashmap = hashmap_clone.lock().await;
@@ -211,13 +215,14 @@ impl Server {
                     let semaphore_clone = semaphore.clone();
                     let hashmap_clone = nodes.clone();
                     let incoming_sender_clone = incoming_sender.clone();
+                    let request_delete_clone = request_delete.clone();
 
                     tokio::task::spawn(async move {
 
                         // Take out a permit to enforce concurrency limit
                         let permit = semaphore_clone.acquire_owned().await?;
                         let (node, discovery) = Node::build_and_listen(
-                            socket, channel_size, permit, incoming_sender_clone
+                            socket, channel_size, permit, incoming_sender_clone, request_delete_clone
                         ).await?;
 
                         let mut hashmap = hashmap_clone.lock().await;
@@ -225,6 +230,22 @@ impl Server {
 
                         Ok::<(), crate::error::Error>(())
                     });
+                }
+
+                maybe_request_delete = garbage_collector.recv() => {
+                    match maybe_request_delete {
+
+                        // The node by this identifier needs to be terminated
+                        Ok(identifier) => {
+                            let mut nodes = nodes.lock().await;
+                            _ = nodes.remove(&identifier);
+                        },
+
+                        // Something went wrong
+                        Err(e) => {
+                            eprintln!("[SPIDERWEB] Failed to receive deletion request: {e:?}");
+                        }
+                    }
                 }
             }
         }
@@ -254,7 +275,8 @@ impl Node {
         discovery: Discovery,
         channel_size: usize,
         permit: OwnedSemaphorePermit,
-        incoming_sender: Sender<(Bytes, String)>
+        incoming_sender: Sender<(Bytes, String)>,
+        request_delete: Sender<String>,
     ) -> Res<Node> {
         // Form a connection to the discovery
         let mut socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
@@ -265,7 +287,7 @@ impl Node {
         socket.write_all(&size_header.to_be_bytes()).await?;
         socket.write_all(&bytes).await?;
 
-        let (node, _) = Node::build(socket, channel_size, permit, incoming_sender, IdentificationMethod::Known(discovery)).await?;
+        let (node, _) = Node::build(socket, channel_size, permit, incoming_sender, IdentificationMethod::Known(discovery), request_delete).await?;
         Ok(node)
     }
 
@@ -274,7 +296,8 @@ impl Node {
         channel_size: usize,
         permit: OwnedSemaphorePermit,
         incoming_sender: Sender<(Bytes, String)>,
-        identification_method: IdentificationMethod
+        identification_method: IdentificationMethod,
+        request_delete: Sender<String>,
     ) -> Res<(Self, Discovery)> {
 
         // Build Node
@@ -309,9 +332,11 @@ impl Node {
             IdentificationMethod::Known(discovery) => Ok(discovery)
         }?;
 
-        let send_task = tokio::task::spawn(Self::send_task(write_half, queue));
+        let (killswitch, terminator) = tokio::sync::oneshot::channel();
+
+        let send_task = tokio::task::spawn(Self::send_task(write_half, queue, terminator));
         let recv_task = tokio::task::spawn(Self::recv_task(read_half, incoming_sender, discovery.get_identifier()));
-        let task = tokio::task::spawn(Self::node_heartbeat(permit, send_task, recv_task));
+        let task = tokio::task::spawn(Self::node_heartbeat(permit, discovery.get_identifier(), send_task, recv_task, killswitch, request_delete));
 
         Ok(
             (
@@ -325,21 +350,42 @@ impl Node {
     }
     
     async fn build_and_listen(
-        stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<(Bytes, String)>
+        stream: TcpStream,
+        channel_size: usize,
+        permit: OwnedSemaphorePermit,
+        incoming_sender: Sender<(Bytes, String)>,
+        request_delete: Sender<String>,
     ) -> Res<(Node, Discovery)> {
-        Node::build(stream, channel_size, permit, incoming_sender, IdentificationMethod::Listen).await
+        Node::build(stream, channel_size, permit, incoming_sender, IdentificationMethod::Listen, request_delete).await
     }
 
-    async fn send_task(mut write_half: OwnedWriteHalf, queue: Receiver<Bytes>) -> Res<()> {
-        while let Ok(bytes) = queue.recv().await {
+    async fn send_task(mut write_half: OwnedWriteHalf, queue: Receiver<Bytes>, mut terminate: tokio::sync::oneshot::Receiver<()>) -> Res<()> {
 
-            // Write length header into queue
-            let length: u32 = bytes.len() as u32;
-            let header: Bytes = Bytes::copy_from_slice(&length.to_be_bytes());
-            write_half.write_all(&header).await?;
+        loop {
+        // while let Ok(bytes) = queue.recv().await {
+        
+            tokio::select! {
+                    
+                // Write length header into queue
+                maybe_bytes = queue.recv() => {
 
-            // Write payload into queue
-            write_half.write_all(&bytes).await?;
+                    let bytes = match maybe_bytes {
+                        Ok(bytes) => bytes,
+                        Err(_) => break
+                    };
+
+                    let length: u32 = bytes.len() as u32;
+                    let header: Bytes = Bytes::copy_from_slice(&length.to_be_bytes());
+                    write_half.write_all(&header).await?;
+
+                    // Write payload into queue
+                    write_half.write_all(&bytes).await?;
+                },
+
+                _ = &mut terminate => {
+                    break
+                }
+            }
         }
 
         Ok(())
@@ -375,11 +421,19 @@ impl Node {
     /// Enforces connection concurrency limit
     async fn node_heartbeat(
         _permit: OwnedSemaphorePermit,
+        identifier: String,
         send_task: JoinHandle<Res<()>>,
-        recv_task: JoinHandle<Res<()>>
+        recv_task: JoinHandle<Res<()>>,
+        killswitch: tokio::sync::oneshot::Sender<()>,
+        request_delete: Sender<String>,
     ) -> Res<()> {
-        let _ = send_task.await?;
         let _ = recv_task.await?;
+        println!("[SPIDERWEB] Node connection severed!");
+        let _ = killswitch.send(());
+        let _ = send_task.await?;
+        println!("[SPIDERWEB] Sender terminated gracefully.");
+        let deletion_success = request_delete.send(identifier).await;
+        println!("[SPIDERWEB] Sent deletion request: {deletion_success:?}");
         Ok(())
     }
 }

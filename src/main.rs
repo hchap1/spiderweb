@@ -34,7 +34,7 @@ async fn main() -> Res<()> {
     let incoming = server.incoming.recv().await.unwrap();
     println!("Received: {:?} from {}", incoming.0, incoming.1);
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(120)).await;
 
     Ok(())
 }
