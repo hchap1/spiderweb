@@ -268,13 +268,10 @@ impl Node {
         let mut socket = TcpStream::connect(SocketAddrV4::new(discovery.ip, discovery.port)).await?;
 
         // Send an initial packet with details of self
-        println!("[SPIDERWEB] Serialising self: {:?}", me.to_bytes()?);
         let bytes = me.to_bytes()?;
         let size_header = bytes.len() as u32;
-        println!("[SPIDERWEB] Serialised size: {size_header}");
         socket.write_all(&size_header.to_be_bytes()).await?;
         socket.write_all(&bytes).await?;
-        println!("[SPIDERWEB] Registered serialised identity packet to be sent.");
 
         let (node, _) = Node::build(me.get_identifier(), socket, channel_size, permit, incoming_sender, false).await?;
         Ok(node)
@@ -299,9 +296,7 @@ impl Node {
             true => {
                 let mut size_buffer: [u8; 4] = [0u8; 4];
                 read_half.read_exact(&mut size_buffer).await?;
-                println!("[SPIDERWEB] Pulled size buffer: {size_buffer:?}");
                 let size = u32::from_be_bytes(size_buffer) as usize;
-                println!("[SPIDERWEB] This is {size} bytes.");
                 let mut bytes = BytesMut::with_capacity(size);
                 // Buffer the bytes
 
@@ -314,8 +309,6 @@ impl Node {
                     }
                 }
 
-                println!("[SPIDERWEB] Read {size:?} bytes.");
-                println!("[SPIDERWEB] The bytes were: {bytes:?}");
                 Ok::<_, crate::error::Error>(bytes.freeze())
             }.ok(),
             false => None
@@ -340,7 +333,6 @@ impl Node {
         identifier: String, stream: TcpStream, channel_size: usize, permit: OwnedSemaphorePermit, incoming_sender: Sender<(Bytes, String)>
     ) -> Res<(Node, Bytes)> {
         let (node, first_packet) = Node::build(identifier, stream, channel_size, permit, incoming_sender, true).await?;
-        println!("[SPIDERWEB] First packet, straight out of node: {first_packet:?}");
         match first_packet {
             Some(first_packet) => Ok((node, first_packet)),
             None => Err(crate::error::Error::NoFirstPacket)
@@ -349,8 +341,6 @@ impl Node {
 
     async fn send_task(mut write_half: OwnedWriteHalf, queue: Receiver<Bytes>) -> Res<()> {
         while let Ok(bytes) = queue.recv().await {
-
-            println!("[SPIDERWEB] Received bytes to send: {bytes:?}");
 
             // Write length header into queue
             let length: u32 = bytes.len() as u32;
