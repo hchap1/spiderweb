@@ -12,7 +12,7 @@ use crate::error::Res;
 #[tokio::main]
 async fn main() -> Res<()> {
 
-    let server = Server::build("spiderweb_test", 12345, Some(String::from("PC")), 10, 100);
+    let mut server = Server::build("spiderweb_test", 12345, Some(String::from("PC")), 10, 100);
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     while server.get_foreign_identifiers().await.is_empty() {
@@ -33,6 +33,7 @@ async fn main() -> Res<()> {
 
     while let Ok(incoming) = server.incoming.recv().await {
         println!("Received: {:?} from {}", incoming.0, incoming.1);
+        server.graceful_shutdown().await?;
     }
 
     Ok(())

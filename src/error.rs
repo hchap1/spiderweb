@@ -53,6 +53,9 @@ pub enum Error {
     #[error("Unexpected EOF when reading packet of specified size")]
     #[allow(clippy::upper_case_acronyms)]
     EOF,
+
+    #[error("The server has already been shut down, and the log claimed")]
+    ServerShutddownAlready,
 }
 
 impl<T> From<async_channel::SendError<T>> for Error {

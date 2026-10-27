@@ -25,6 +25,47 @@ use tokio::sync::Mutex;
 use bytes::Bytes;
 use tokio::task::JoinHandle;
 
+/// Log for the Server
+/// Returned at the end
+#[derive(Clone)]
+pub struct Log {
+    buffer: Vec<String>,
+    ptr: usize
+}
+
+impl Log {
+    pub fn new() -> Self {
+        Self {
+            buffer: vec![String::new(); 1000],
+            ptr: 0
+        }
+    }
+
+    pub fn log(&mut self, string: String) {
+        if let Some(line) = self.buffer.get_mut(self.ptr) {
+            *line = string;
+        }
+    }
+}
+
+/// Wraps log so it can be Send
+pub struct LogContainer {
+    log: Arc<Mutex<Log>>
+}
+
+impl LogContainer {
+    pub fn new() -> Self {
+        Self {
+            log: Arc::new(Mutex::new(Log::new()))
+        }
+    }
+
+    pub async fn log(&self, string: String) {
+        let mut log = self.log.lock().await;
+        log.log(string)
+    }
+}
+
 /// The server manages the TcpListener for foreign clients accepting
 /// and produces a Node upon successful connection
 /// Also tracks individual nodes
@@ -35,8 +76,12 @@ pub struct Server {
     pub outgoing: Sender   <(Bytes, Vec<String>)>,
 
     // Outgoing messages
-    send_task: JoinHandle<Res<()>>,
-    acquisition_task: JoinHandle<Res<()>>,
+    _send_task: Option<JoinHandle<Res<()>>>,
+    _acquisition_task: Option<JoinHandle<Res<Log>>>,
+
+    // Trigger graceful shutdown
+    _killswitch: Option<tokio::sync::oneshot::Sender<()>>,
+    _incoming_sender_part: Sender<(Bytes, String)>,
 }
 
 impl Server {
@@ -48,19 +93,39 @@ impl Server {
         // Create channels for owned tasks
         let (incoming_sender, incoming) = bounded(channel_size);
         let (outgoing, outgoing_receiver) = bounded(channel_size);
+        let _incoming_sender_part = incoming_sender.clone();
         let nodes = Arc::new(Mutex::new(HashMap::new()));
 
-        let send_task = tokio::task::spawn(Self::send(outgoing_receiver, nodes.clone()));
-        let acquisition_task = tokio::task::spawn(
-            Self::acquisition_manager(application_name, port, nickname, concurrency_limit, channel_size, nodes.clone(), incoming_sender)
+        // Shutdown channels
+        let (killswitch, killswitch_receiver) = tokio::sync::oneshot::channel();
+        let (send_killswitch, send_killswitch_receiver) = tokio::sync::oneshot::channel();
+
+        let _send_task = tokio::task::spawn(Self::send(outgoing_receiver, nodes.clone(), send_killswitch_receiver));
+        let _acquisition_task = tokio::task::spawn(
+            Self::acquisition_manager(application_name, port, nickname, concurrency_limit, channel_size, nodes.clone(), incoming_sender, killswitch_receiver, send_killswitch)
         );
 
         Self {
             nodes,
             incoming,
             outgoing,
-            send_task,
-            acquisition_task,
+            _send_task: Some(_send_task),
+            _acquisition_task: Some(_acquisition_task),
+            _killswitch: Some(killswitch),
+            _incoming_sender_part
+        }
+    }
+
+    pub async fn graceful_shutdown(&mut self) -> Res<Log> {
+        match (self._killswitch.take(), self._send_task.take(), self._acquisition_task.take()) {
+            (Some(k), Some(s), Some(a)) => {
+                self._incoming_sender_part.close();
+                let _ = k.send(());
+                let _ = s.await?;
+                a.await?
+            },
+
+            _ => Err(crate::error::Error::ServerShutddownAlready)
         }
     }
 
@@ -71,18 +136,37 @@ impl Server {
 
     /// Distribute a packet to a selection of identifiers
     /// If the Vec<String> is empty, then the packet will be sent to all nodes.
-    async fn send(outgoing_receiver: Receiver<(Bytes, Vec<String>)>, nodes: Arc<Mutex<HashMap<String, Node>>>) -> Res<()> {
-        while let Ok((packet, identifiers)) = outgoing_receiver.recv().await {
-            let hashmap = nodes.lock().await;
-            if identifiers.is_empty() {
-                for node in hashmap.values() {
-                    let _ = node.send.send(packet.clone()).await;
-                }
-            } else {
-                for identifier in identifiers {
-                    if let Some(node) = hashmap.get(&identifier) {
-                        let _ = node.send.send(packet.clone()).await;
+    async fn send(
+        outgoing_receiver: Receiver<(Bytes, Vec<String>)>,
+        nodes: Arc<Mutex<HashMap<String, Node>>>,
+        mut killswitch_receiver: tokio::sync::oneshot::Receiver<()>
+    ) -> Res<()> {
+
+        loop {
+            tokio::select! {
+                maybe_incoming = outgoing_receiver.recv() => {
+
+                    let (packet, identifiers) = match maybe_incoming {
+                        Ok(incoming) => incoming,
+                        Err(_) => continue
+                    };
+
+                    let hashmap = nodes.lock().await;
+                    if identifiers.is_empty() {
+                        for node in hashmap.values() {
+                            let _ = node.send.send(packet.clone()).await;
+                        }
+                    } else {
+                        for identifier in identifiers {
+                            if let Some(node) = hashmap.get(&identifier) {
+                                let _ = node.send.send(packet.clone()).await;
+                            }
+                        }
                     }
+                }
+
+                _ = &mut killswitch_receiver => {
+                    break;
                 }
             }
         }
@@ -92,11 +176,14 @@ impl Server {
 
     /// This function is responsible for receiving new mDNS discoveries AND foreign clients
     /// it is also responsible for maintaining concurrency limit
+    #[allow(clippy::too_many_arguments)]
     async fn acquisition_manager(
         application_name: &'static str, port: u16, nickname: Option<String>,
         concurrency_limit: usize, channel_size: usize,
-        nodes: Arc<Mutex<HashMap<String, Node>>>, incoming_sender: Sender<(Bytes, String)>
-    ) -> Res<()> {
+        nodes: Arc<Mutex<HashMap<String, Node>>>, incoming_sender: Sender<(Bytes, String)>,
+        mut killswitch_receiver: tokio::sync::oneshot::Receiver<()>,
+        send_killswitch: tokio::sync::oneshot::Sender<()>
+    ) -> Res<Log> {
 
         let server = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port)).await?;
         let advertiser = register(application_name, port, nickname).await?;
@@ -106,6 +193,9 @@ impl Server {
         // Sender/Receiver pair for deleting nodes
         let (request_delete, garbage_collector) = bounded(channel_size);
 
+        // Logging
+        let log = Arc::new(LogContainer::new());
+
         loop {
             tokio::select! {
 
@@ -114,7 +204,7 @@ impl Server {
                     let event = match maybe_event {
                         Ok(event) => event,
                         Err(e) => {
-                            eprintln!("[SPIDERWEB] Failed to retrieve mDNS event: {e:?}");
+                            log.log(format!("[SPIDERWEB] Failed to retrieve mDNS event: {e:?}")).await;
                             continue;
                         }
                     };
@@ -127,7 +217,7 @@ impl Server {
                     let discovery = match discovery {
                         Ok(v) => v,
                         Err(e) => {
-                            println!("[SPIDERWEB] Failed to parse discovery. {e:?}");
+                            log.log(format!("[SPIDERWEB] Failed to parse discovery. {e:?}")).await;
                             continue;
                         }
                     };
@@ -147,22 +237,19 @@ impl Server {
                     };
 
                     if exists {
-                        println!("[SPIDERWEB] Found existing or self connection, skipping");
+                        log.log(String::from("[SPIDERWEB] Found existing or self connection, skipping")).await;
                         continue;
-                    } else {
-                        println!("[SPIDERWEB] Found new connection!");
                     }
-
 
                     let mode = match advertiser.discovery.decide_server(&discovery).await {
                         Ok(v) => v,
                         Err(e) => {
-                            eprintln!("[SPIDERWEB] Failed to decide server. {e:?}");
+                            log.log(format!("[SPIDERWEB] Failed to decide server. {e:?}")).await;
                             continue;
                         }
                     };
 
-                    println!("[SPIDERWEB] Decided mode for new connection: {mode:?}");
+                    log.log(format!("[SPIDERWEB] Decided mode for new connection: {mode:?}")).await;
 
                     let hashmap_clone = nodes.clone();
                     let discovery_clone = advertiser.discovery.clone();
@@ -170,6 +257,8 @@ impl Server {
                     let incoming_sender_clone = incoming_sender.clone();
 
                     let request_delete_clone = request_delete.clone();
+
+                    let log_clone = log.clone();
                     
                     match mode {
                         Mode::Client => tokio::task::spawn(async move {
@@ -181,18 +270,16 @@ impl Server {
                                 Ok(node) => {
                                     let mut hashmap = hashmap_clone.lock().await;
                                     let _ = hashmap.insert(identifier, node);
-
-                                    // TODO remove debug print
-                                    println!("[SPIDERWEB INFO] Successfully connected to foreign Node");
+                                    log_clone.log(String::from("[SPIDERWEB INFO] Successfully connected to foreign Node")).await;
                                 },
                                 Err(e) => {
-                                    eprintln!("[SPIDERWEB] Failed to connect to foreign node as a client. {e:?}");
+                                    log_clone.log(format!("[SPIDERWEB] Failed to connect to foreign node as a client. {e:?}")).await;
                                 }
                             }
                             Ok::<(), crate::error::Error>(())
                         }),
                         Mode::Server => {
-                            eprintln!("[SPIDERWEB] Discovered node that should connect.");
+                            log.log(String::from("[SPIDERWEB] Discovered node that should connect.")).await;
                             continue;
                         }
                     };
@@ -202,12 +289,12 @@ impl Server {
                 // First, must wait for a packet containing the serialised discovery information
                 maybe_request = server.accept() => {
 
-                    println!("[SPIDERWEB] Foreign-node attempted connection.");
+                    log.log(String::from("[SPIDERWEB] Foreign-node attempted connection.")).await;
 
                     let (socket, _) = match maybe_request {
                         Ok(v) => v,
                         Err(e) => {
-                            eprintln!("[SPIDERWEB] Failed to accept connection request. {e:?}");
+                            log.log(format!("[SPIDERWEB] Failed to accept connection request. {e:?}")).await;
                             continue;
                         }
                     };
@@ -243,12 +330,23 @@ impl Server {
 
                         // Something went wrong
                         Err(e) => {
-                            eprintln!("[SPIDERWEB] Failed to receive deletion request: {e:?}");
+                            log.log(format!("[SPIDERWEB] Failed to receive deletion request: {e:?}")).await;
                         }
                     }
                 }
+
+                _ = &mut killswitch_receiver => {
+                    _ = send_killswitch.send(());
+                    break;
+                }
             }
         }
+
+        let log = log.log.lock().await;
+        let log_clone = log.clone();
+
+        Ok(log_clone)
+
     }
 }
 
@@ -428,12 +526,9 @@ impl Node {
         request_delete: Sender<String>,
     ) -> Res<()> {
         let _ = recv_task.await?;
-        println!("[SPIDERWEB] Node connection severed!");
         let _ = killswitch.send(());
         let _ = send_task.await?;
-        println!("[SPIDERWEB] Sender terminated gracefully.");
-        let deletion_success = request_delete.send(identifier).await;
-        println!("[SPIDERWEB] Sent deletion request: {deletion_success:?}");
+        request_delete.send(identifier).await?;
         Ok(())
     }
 }
